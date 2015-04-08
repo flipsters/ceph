@@ -1540,6 +1540,7 @@ fail:
   for (uint32_t i=0; i < num_rados_handles; i++) {
     if (rados[i]) {
       delete rados[i];
+<<<<<<< HEAD
       rados[i] = NULL;
     }
   }
@@ -1547,6 +1548,12 @@ fail:
   if (rados) {
     delete[] rados;
     rados = NULL;
+=======
+    }
+  }
+  if (rados) {
+    delete[] rados;
+>>>>>>> 0a85023... RGW: Make RADOS handles in RGW to be a configurable option
   }
 
   return ret;
