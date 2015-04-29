@@ -12280,8 +12280,12 @@ librados::Rados* RGWRados::get_rados_handle()
       return &rados[it->second];
     } else {
       handle_lock.put_read();
-      handle_lock.get_write();
-      const uint32_t handle = next_rados_handle;
+      handle_lock.get_write();=
+      uint32_t handle = next_rados_handle.read();
+      if (handle == num_rados_handles) {
+        next_rados_handle.set(0);
+        handle = 0;
+      }
       rados_map[id] = handle;
       if (++next_rados_handle == rados.size()) {
         next_rados_handle = 0;
