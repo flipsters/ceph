@@ -4359,8 +4359,8 @@ int RGWRados::check_bucket_empty(rgw_bucket& bucket)
 int RGWRados::delete_bucket(rgw_bucket& bucket, RGWObjVersionTracker& objv_tracker)
 {
   librados::IoCtx index_ctx;
-  string oid;
-  int r = open_bucket_index(bucket, index_ctx, oid);
+  map<int, string> bucket_objs;
+  int r = open_bucket_index(bucket, index_ctx, bucket_objs);
   if (r < 0)
     return r;
 
@@ -4394,6 +4394,11 @@ int RGWRados::delete_bucket(rgw_bucket& bucket, RGWObjVersionTracker& objv_track
     r= rgw_bucket_instance_remove_entry(this, entry, &objv_tracker);
     if (r < 0) {
       return r;
+    }
+    /* remove bucket index objects*/
+    map<int, string>::const_iterator biter;
+    for (biter = bucket_objs.begin(); biter != bucket_objs.end(); ++biter) {
+      index_ctx.remove(biter->second);
     }
   }
   return 0;
