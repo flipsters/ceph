@@ -221,6 +221,16 @@ enum {
   l_rgw_keystone_token_cache_hit,
   l_rgw_keystone_token_cache_miss,
 
+<<<<<<< HEAD
+=======
+  l_rgw_http_status_1xx,
+  l_rgw_http_status_2xx,
+  l_rgw_http_status_3xx,
+  l_rgw_http_status_4xx,
+  l_rgw_http_status_5xx,
+  l_rgw_http_status_NULL,
+
+>>>>>>> f59fa71e33... Fixed the issues mentioned by Sharath and also added a line of code in src/rgw/rgw_rest.cc to capture the 100 continue
   l_rgw_last,
 };
 

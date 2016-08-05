@@ -759,7 +759,12 @@ void abort_early(struct req_state *s, RGWOp *op, int err_no,
 
 void dump_continue(struct req_state *s)
 {
+<<<<<<< HEAD
   STREAM_IO(s)->send_100_continue();
+=======
+  perfcounter->inc(l_rgw_http_status_1xx);
+  s->cio->send_100_continue();
+>>>>>>> f59fa71e33... Fixed the issues mentioned by Sharath and also added a line of code in src/rgw/rgw_rest.cc to capture the 100 continue
 }
 
 void dump_range(struct req_state *s, uint64_t ofs, uint64_t end,
