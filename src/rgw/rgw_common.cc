@@ -52,6 +52,13 @@ int rgw_perf_start(CephContext *cct)
   plb.add_u64_counter(l_rgw_keystone_token_cache_hit, "keystone_token_cache_hit", "Keystone token cache hits");
   plb.add_u64_counter(l_rgw_keystone_token_cache_miss, "keystone_token_cache_miss", "Keystone token cache miss");
 
+  plb.add_u64_counter(l_rgw_http_1xx_count, "http_1xx_count", "Count of 1xx HTTP status");
+  plb.add_u64_counter(l_rgw_http_2xx_count, "http_2xx_count", "Count of 2xx HTTP status");
+  plb.add_u64_counter(l_rgw_http_3xx_count, "http_3xx_count", "Count of 3xx HTTP status");
+  plb.add_u64_counter(l_rgw_http_4xx_count, "http_4xx_count", "Count of 4xx HTTP status");
+  plb.add_u64_counter(l_rgw_http_5xx_count, "http_5xx_count", "Count of 5xx HTTP status");
+  plb.add_u64_counter(l_rgw_http_NULL_count, "http_NULL_count", "Count of NULL HTTP status");
+
   perfcounter = plb.create_perf_counters();
   cct->get_perfcounters_collection()->add(perfcounter);
   return 0;
