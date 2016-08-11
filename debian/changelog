@@ -2,6 +2,7 @@ ceph (0.94.2-1~bpo70+1.fk2) stable; urgency=low
 
   * Flipkart New upstream release
     - HTTP Status count for RGW requests http://tracker.ceph.com/issues/16971
+    - RGW: Make RADOS handles in RGW to be a configurable option https://github.com/ceph/ceph/pull/4309
 
  -- Prashant Kumar <prashant.kr@flipkart.com>  Wed, 10 Aug 2016 17:10:00 -0700
 
