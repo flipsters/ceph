@@ -18,9 +18,14 @@
 #include "common/ceph_crypto.h"
 #include "common/debug.h"
 #include "common/perf_counters.h"
+#include "common/centile.h"
 
 #include "acconfig.h"
 
+#include <vector>
+#include <cstdlib>
+#include <map>
+#include <sstream>
 #include <errno.h>
 #include <string.h>
 #include <string>
@@ -158,9 +163,19 @@ typedef void *RGWAccessHandle;
 /* perf counter */
 
 extern PerfCounters *perfcounter;
+extern PerfCounters *percentile_perfcounter;
 
 extern int rgw_perf_start(CephContext *cct);
 extern void rgw_perf_stop(CephContext *cct);
+
+extern int percentile_perf_start(CephContext *cct);
+extern void percentile_perf_stop(CephContext *cct);
+
+extern centile::CentileCollection *lat_centile;
+
+extern int percentile_first;
+extern vector<double> percentiles;
+extern vector<unsigned int> object_sizes;
 
 enum {
   l_rgw_first = 15000,

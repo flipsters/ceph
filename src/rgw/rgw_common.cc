@@ -16,6 +16,7 @@
 #include "common/Clock.h"
 #include "common/Formatter.h"
 #include "common/perf_counters.h"
+#include "common/centile.h"
 #include "common/strtol.h"
 #include "include/str_list.h"
 #include "auth/Crypto.h"
@@ -25,8 +26,14 @@
 #define dout_subsys ceph_subsys_rgw
 
 PerfCounters *perfcounter = NULL;
+PerfCounters *percentile_perfcounter = NULL;
+int percentile_first;
+vector<double> percentiles;
+vector<unsigned int> object_sizes;
 
 const uint32_t RGWBucketInfo::NUM_SHARDS_BLIND_BUCKET(UINT32_MAX);
+
+centile::CentileCollection *lat_centile;
 
 int rgw_perf_start(CephContext *cct)
 {
@@ -62,6 +69,96 @@ void rgw_perf_stop(CephContext *cct)
   cct->get_perfcounters_collection()->remove(perfcounter);
   delete perfcounter;
 }
+
+int percentile_perf_start(CephContext *cct)
+{
+  int p_starti, p_endi, p_inci, index = 1;
+  percentile_first = 16000;
+
+  vector<string> sections;
+  sections.push_back("client");
+  string percentiles_conf_val, object_sizes_conf_val, p_start, p_end, p_inc;
+  cct->_conf->get_val_from_conf_file(sections, "percentiles", percentiles_conf_val, false);
+  cct->_conf->get_val_from_conf_file(sections, "object_sizes", object_sizes_conf_val, false);
+  cct->_conf->get_val_from_conf_file(sections, "percentile_start", p_start, false);
+  cct->_conf->get_val_from_conf_file(sections, "percentile_end", p_end, false);
+  cct->_conf->get_val_from_conf_file(sections, "percentile_inc", p_inc, false);
+
+  stringstream ss;
+  string item;
+
+  if(percentiles_conf_val.size() > 0) {
+    ss.str(percentiles_conf_val);
+    while (getline(ss, item, ',')) {
+      percentiles.push_back(std::atof(item.c_str()));
+    }
+  }
+  if(object_sizes_conf_val.size() > 0) {
+    ss.clear();
+    ss.str("");
+    item = "";
+    ss.str(object_sizes_conf_val);
+    while (getline(ss, item, ',')) {
+      object_sizes.push_back(std::atoi(item.c_str()));
+    }
+  }
+
+  if(percentiles.empty()) {
+    percentiles.push_back(0.99);
+  }
+  if(object_sizes.empty()) {
+    object_sizes.push_back(1);
+  }
+  if(p_start.size() > 0) {
+    p_starti = atoi(p_start.c_str());
+  } else {
+    p_starti = 0;
+  }
+  if(p_end.size() > 0) {
+    p_endi = atoi(p_end.c_str());
+  } else {
+    p_endi = 5000;
+  }
+  if(p_inc.size() > 0) {
+    p_inci = atoi(p_inc.c_str());
+  } else {
+    p_inci = 5;
+  }
+  int percentile_last = percentile_first + (percentiles.size() * object_sizes.size()) + 1;
+  PerfCountersBuilder plb(cct, "percentiles", percentile_first, percentile_last);
+
+  lat_centile = new centile::CentileCollection(p_starti, p_endi, p_inci, object_sizes);
+
+  for(vector<unsigned int>::iterator object_size_it = object_sizes.begin(); object_size_it != object_sizes.end(); object_size_it++) {
+    for(vector<double>::iterator percentile_it = percentiles.begin(); percentile_it != percentiles.end(); percentile_it++) {
+      std::ostringstream ostr;
+      ostr << *object_size_it;
+      std::string object_size = ostr.str();
+      ostr.clear();
+      ostr.str("");
+      ostr << *percentile_it;
+      std::string percentile = ostr.str();
+      string str = string("object_") + object_size + "_percentile_" + percentile;
+      char * cstr = new char [str.length()+1];
+      strcpy (cstr, str.c_str());
+      plb.add_u64_counter(percentile_first + index, cstr);
+      index++;
+    }
+  }
+
+  percentile_perfcounter = plb.create_perf_counters();
+  cct->get_perfcounters_collection()->add(percentile_perfcounter);
+  return 0;
+}
+
+void percentile_perf_stop(CephContext *cct)
+{
+  assert(percentile_perfcounter);
+  cct->get_perfcounters_collection()->remove(percentile_perfcounter);
+  delete percentile_perfcounter;
+  delete lat_centile;
+}
+
 
 using namespace ceph::crypto;
 

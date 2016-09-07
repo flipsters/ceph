@@ -11,6 +11,7 @@
 #include "common/mime.h"
 #include "common/utf8.h"
 #include "common/ceph_json.h"
+#include "common/centile.h"
 
 #include "rgw_rados.h"
 #include "rgw_op.h"
@@ -886,6 +887,12 @@ void RGWGetObj::pre_exec()
 
 void RGWGetObj::execute()
 {
+
+  vector<unsigned int>::iterator object_size_it;
+  int obj_size_index = 0;
+  vector<double>::iterator percentile_it;
+  int percentile_index=1;
+
   utime_t start_time = s->time;
   bufferlist bl;
   gc_invalidate_time = ceph_clock_now(s->cct);
@@ -949,6 +956,21 @@ void RGWGetObj::execute()
 
   perfcounter->tinc(l_rgw_get_lat,
                    (ceph_clock_now(s->cct) - start_time));
+  lat_centile->insert(*read_op.params.obj_size, (ceph_clock_now(s->cct) - start_time).to_msec());
+
+  for(object_size_it = object_sizes.begin(); object_size_it != object_sizes.end(); object_size_it++) {
+    if(*object_size_it >= *read_op.params.obj_size) {
+      break;
+    }
+    obj_size_index++;
+  }
+  if(object_size_it == object_sizes.end())
+    obj_size_index--;
+  for(percentile_it = percentiles.begin(); percentile_it != percentiles.end(); percentile_it++) {
+    percentile_perfcounter->set(percentile_first + (obj_size_index * percentiles.size()) + percentile_index, lat_centile->query(s->cct, *read_op.params.obj_size, *percentile_it));
+    percentile_index++;
+  }
+
   if (ret < 0) {
     goto done_err;
   }

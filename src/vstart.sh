@@ -386,6 +386,11 @@ fi
         keyring = $keyring_fn
         log file = $CEPH_OUT_DIR/\$name.\$pid.log
         admin socket = $CEPH_OUT_DIR/\$name.\$pid.asok
+	percentiles = 0.5,0.7,0.9, 0.99, 0.999
+	percentile start = 5
+	percentile end = 2000
+	percentile inc = 5
+	object_sizes = 1124, 4196 ,65536,1048576,4194304,8388608
 
 [mds]
 $DAEMONOPTS
