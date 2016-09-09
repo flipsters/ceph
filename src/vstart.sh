@@ -388,9 +388,9 @@ fi
         admin socket = $CEPH_OUT_DIR/\$name.\$pid.asok
 	rgw percentile buckets = 0.9, 0.99, 0.999
 	rgw object size buckets = 4196 ,65536,1048576,4194304,8388608
-	rgw latency bucket duration start = 0
-	rgw latency bucket duration count = 1000
-	rgw latency bucket duration increment = 2
+	rgw latency bucket duration start = 40
+	rgw latency bucket duration count = 100
+	rgw latency bucket duration increment = 5
 	rgw latency bucket reset = 3600
 	rgw latency bucket update = 30
 
