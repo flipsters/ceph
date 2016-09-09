@@ -8,6 +8,7 @@ libcommon_internal_la_SOURCES = \
 	common/PrebufferedStreambuf.cc \
 	common/SloppyCRCMap.cc \
 	common/BackTrace.cc \
+	common/centile.cc \
 	common/perf_counters.cc \
 	common/mutex_debug.cc \
 	common/Mutex.cc \
@@ -220,6 +221,7 @@ noinst_HEADERS += \
 	common/Finisher.h \
 	common/Formatter.h \
 	common/HTMLFormatter.h \
+	common/centile.h \
 	common/perf_counters.h \
 	common/OutputDataSocket.h \
 	common/admin_socket.h \

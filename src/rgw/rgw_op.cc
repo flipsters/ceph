@@ -12,6 +12,7 @@
 #include "common/mime.h"
 #include "common/utf8.h"
 #include "common/ceph_json.h"
+#include "common/centile.h"
 
 #include "rgw_rados.h"
 #include "rgw_op.h"
@@ -1310,6 +1311,9 @@ void RGWGetObj::execute()
 
   perfcounter->tinc(l_rgw_get_lat,
                    (ceph_clock_now(s->cct) - start_time));
+
+  get_lat_centile->insert(*read_op.params.obj_size, (ceph_clock_now(s->cct) - start_time).to_msec());
+
   if (op_ret < 0) {
     goto done_err;
   }
@@ -2770,6 +2774,7 @@ done:
   dispose_processor(processor);
   perfcounter->tinc(l_rgw_put_lat,
                    (ceph_clock_now(s->cct) - s->time));
+  put_lat_centile->insert(s->obj_size, (ceph_clock_now(s->cct) - s->time).to_msec());
 }
 
 int RGWPostObj::verify_permission()
