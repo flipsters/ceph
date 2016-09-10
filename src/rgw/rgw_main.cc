@@ -60,6 +60,8 @@
 #include "rgw_civetweb.h"
 #include "rgw_civetweb_log.h"
 
+#include "rgw_rate_limit.h"
+
 #include "civetweb/civetweb.h"
 
 #include <map>
@@ -591,6 +593,15 @@ static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWC
     abort_early(s, op, -ERR_USER_SUSPENDED);
     goto done;
   }
+
+  if ( s->user.user_id != RGW_USER_ANON_ID ) {
+    if ( rgw_rate_limit_ok(s->user.user_id, op) == false ) {
+      dout(20) << "user: " << s->user.user_id << "exceeded API limit" << dendl;
+      abort_early(s, op, -ERR_SLOW_DOWN);
+      goto done;
+    }
+  }
+
   req->log(s, "reading permissions");
   ret = handler->read_permissions(op);
   if (ret < 0) {
@@ -1171,6 +1182,11 @@ int main(int argc, const char **argv)
   register_async_signal_handler(SIGINT, handle_sigterm);
   register_async_signal_handler(SIGUSR1, handle_sigterm);
   sighandler_alrm = signal(SIGALRM, godown_alarm);
+
+  if ( rgw_rate_limit_init() < 0 ) {
+    derr << "ERROR: Failed to init rate limiter" << dendl;
+    exit(1);
+  }
 
   list<string> frontends;
   get_str_list(g_conf->rgw_frontends, ",", frontends);
