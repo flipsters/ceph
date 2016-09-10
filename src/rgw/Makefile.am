@@ -147,11 +147,12 @@ radosgw_SOURCES = \
 	rgw/rgw_civetweb_frontend.cc \
 	rgw/rgw_civetweb_log.cc \
 	civetweb/src/civetweb.c \
+	rgw/rgw_rate_limit.cc \
 	rgw/rgw_main.cc
 
 radosgw_CFLAGS = -I$(srcdir)/civetweb/include -fPIC -I$(srcdir)/xxHash ${CIVETWEB_INCLUDE} $(SONAME_DEFINES)
 radosgw_LDADD = $(LIBRGW) $(LIBCIVETWEB) $(LIBCIVETWEB_DEPS) $(LIBRGW_DEPS) $(RESOLV_LIBS) \
-	$(CEPH_GLOBAL)
+	$(CEPH_GLOBAL) -lyaml-cpp
 bin_PROGRAMS += radosgw
 
 radosgw_admin_SOURCES = rgw/rgw_admin.cc rgw/rgw_orphan.cc

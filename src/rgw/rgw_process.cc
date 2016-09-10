@@ -12,6 +12,7 @@
 #include "rgw_process.h"
 #include "rgw_loadgen.h"
 #include "rgw_client_io.h"
+#include "rgw_rate_limit.h"
 
 #define dout_subsys ceph_subsys_rgw
 
@@ -107,6 +108,14 @@ int process_request(RGWRados* store, RGWREST* rest, RGWRequest* req,
     dout(10) << "user is suspended, uid=" << s->user->user_id << dendl;
     abort_early(s, op, -ERR_USER_SUSPENDED, handler);
     goto done;
+  }
+
+  if ( s->user.user_id != RGW_USER_ANON_ID ) {
+    if ( rgw_rate_limit_ok(s->user.user_id, op) == false ) {
+      dout(20) << "user: " << s->user.user_id << "exceeded API limit" << dendl;
+      abort_early(s, op, -ERR_SLOW_DOWN);
+      goto done;
+    }
   }
 
   req->log(s, "init permissions");
