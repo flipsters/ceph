@@ -624,7 +624,7 @@ public:
     max_var(-1),
     stddev(0),
     sum(0) {
-    if (pgm->osd_sum.kb)
+    if (pgm->osd_sum.kb && !tree)
       average_util = 100.0 * (double)pgm->osd_sum.kb_used / (double)pgm->osd_sum.kb;
   }
 
@@ -639,12 +639,21 @@ protected:
   virtual void dump_item(const CrushTreeDumper::Item &qi, F *f) {
     if (!tree && qi.is_bucket())
       return;
-
-    float reweight = qi.is_bucket() ? -1 : osdmap->get_weightf(qi.id);
+    
     int64_t kb = 0, kb_used = 0, kb_avail = 0;
     double util = 0;
     if (get_bucket_utilization(qi.id, kb, kb_used, kb_avail) && kb > 0)
       util = 100.0 * (double)kb_used / (double)kb;
+    if (qi.is_bucket() && qi.is_root()) {
+	average_util = util;
+	per_tree_stats.push_back(tree_stat());
+        per_tree_stats_index = per_tree_stats.size() - 1;
+	per_tree_stats[per_tree_stats_index].id = qi.id;
+	per_tree_stats[per_tree_stats_index].min_var = -1;
+	per_tree_stats[per_tree_stats_index].max_var = -1;
+    }
+
+    float reweight = qi.is_bucket() ? -1 : osdmap->get_weightf(qi.id);
     double var = 1.0;
     if (average_util)
       var = util / average_util;
@@ -652,13 +661,27 @@ protected:
     dump_item(qi, reweight, kb, kb_used, kb_avail, util, var, f);
 
     if (!qi.is_bucket()) {
-      if (min_var < 0 || var < min_var) min_var = var;
-      if (max_var < 0 || var > max_var) max_var = var;
+      if (!tree) {
+        if (min_var < 0 || var < min_var) min_var = var;
+        if (max_var < 0 || var > max_var) max_var = var;
 
-      double dev = util - average_util;
-      dev *= dev;
-      stddev += reweight * dev;
-      sum += reweight;
+        double dev = util - average_util;
+        dev *= dev;
+        stddev += reweight * dev;
+        sum += reweight;
+      } else {
+        if (per_tree_stats[per_tree_stats_index].min_var < 0 || 
+	    var < per_tree_stats[per_tree_stats_index].min_var) 
+		per_tree_stats[per_tree_stats_index].min_var = var;
+        if (per_tree_stats[per_tree_stats_index].max_var < 0 || 
+	    var > per_tree_stats[per_tree_stats_index].max_var) 
+		per_tree_stats[per_tree_stats_index].max_var = var;
+
+        double dev = util - average_util;
+        dev *= dev;
+        per_tree_stats[per_tree_stats_index].stddev += reweight * dev;
+        per_tree_stats[per_tree_stats_index].sum += reweight;
+      }
     }
   }
 
@@ -668,6 +691,9 @@ protected:
 
   double dev() {
     return sum > 0 ? sqrt(stddev / sum) : 0;
+  }
+  double dev(double stdev, double tot) {
+    return tot > 0 ? sqrt(stdev / tot) : 0;
   }
 
   bool get_bucket_utilization(int id, int64_t& kb, int64_t& kb_used,
@@ -693,11 +719,11 @@ protected:
     for (int k = osdmap->crush->get_bucket_size(id) - 1; k >= 0; k--) {
       int item = osdmap->crush->get_bucket_item(id, k);
       int64_t kb_i = 0, kb_used_i = 0, kb_avail_i;
-      if (!get_bucket_utilization(item, kb_i, kb_used_i, kb_avail_i))
-	return false;
-      kb += kb_i;
-      kb_used += kb_used_i;
-      kb_avail += kb_avail_i;
+      if (get_bucket_utilization(item, kb_i, kb_used_i, kb_avail_i)) {
+        kb += kb_i;
+        kb_used += kb_used_i;
+        kb_avail += kb_avail_i;
+      }
     }
     return kb > 0;
   }
@@ -711,6 +737,16 @@ protected:
   double max_var;
   double stddev;
   double sum;
+  struct tree_stat {
+	int id;
+        double min_var;
+        double max_var;
+        double sum;
+        double stddev;
+  };
+  int per_tree_stats_index;
+  vector<struct tree_stat> per_tree_stats;
+
 };
 
 class OSDUtilizationPlainDumper : public OSDUtilizationDumper<TextTable> {
@@ -737,13 +773,15 @@ public:
 
     dump_stray(tbl);
 
-    *tbl << "" << "" << "TOTAL"
+    if (!tree) {
+      *tbl << "" << "" << "TOTAL"
 	 << si_t(pgm->osd_sum.kb << 10)
 	 << si_t(pgm->osd_sum.kb_used << 10)
 	 << si_t(pgm->osd_sum.kb_avail << 10)
 	 << lowprecision_t(average_util)
-	 << ""
-	 << TextTable::endrow;
+	 << "";
+    }
+    *tbl << TextTable::endrow;
   }
 
 protected:
@@ -785,9 +823,26 @@ protected:
 public:
   string summary() {
     ostringstream out;
-    out << "MIN/MAX VAR: " << lowprecision_t(min_var)
-	<< "/" << lowprecision_t(max_var) << "  "
-	<< "STDDEV: " << lowprecision_t(dev());
+    if (!tree) {
+      out << "MIN/MAX VAR: " 
+	  << lowprecision_t(min_var)
+	  << "/" 
+	  << lowprecision_t(max_var) 
+	  << "  "
+	  << "STDDEV: " 
+	  << lowprecision_t(dev());
+    } else {
+	for (uint i=0; i<per_tree_stats.size(); i++) {
+          out << crush->get_item_name(per_tree_stats[i].id) 
+	      << "MIN/MAX VAR: " 
+              << lowprecision_t(per_tree_stats[i].min_var)
+	      << "/" 
+ 	      << lowprecision_t(per_tree_stats[i].max_var) 
+	      << "STDDEV: " 
+   	      << lowprecision_t(dev(per_tree_stats[i].stddev, 
+				    per_tree_stats[i].sum));
+        }
+    }
     return out.str();
   }
 };
@@ -842,13 +897,22 @@ protected:
 public:
   void summary(Formatter *f) {
     f->open_object_section("summary");
-    f->dump_int("total_kb", pgm->osd_sum.kb);
-    f->dump_int("total_kb_used", pgm->osd_sum.kb_used);
-    f->dump_int("total_kb_avail", pgm->osd_sum.kb_avail);
-    f->dump_float("average_utilization", average_util);
-    f->dump_float("min_var", min_var);
-    f->dump_float("max_var", max_var);
-    f->dump_float("dev", dev());
+    if (!tree) {
+    	f->dump_int("total_kb", pgm->osd_sum.kb);
+    	f->dump_int("total_kb_used", pgm->osd_sum.kb_used);
+    	f->dump_int("total_kb_avail", pgm->osd_sum.kb_avail);
+    	f->dump_float("average_utilization", average_util);
+    	f->dump_float("min_var", min_var);
+    	f->dump_float("max_var", max_var);
+    	f->dump_float("dev", dev());
+    } else {
+	for (uint i=0; i<per_tree_stats.size(); i++) {
+	  f->dump_string("type name", crush->get_item_name(per_tree_stats[i].id));
+    	  f->dump_float("min_var", per_tree_stats[i].min_var);
+    	  f->dump_float("max_var", per_tree_stats[i].max_var);
+    	  f->dump_float("dev", dev(per_tree_stats[i].stddev, per_tree_stats[i].sum));
+        }
+    }
     f->close_section();
   }
 };

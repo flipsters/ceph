@@ -58,6 +58,7 @@ namespace CrushTreeDumper {
     Item(int i, int d, float w) : id(i), depth(d), weight(w) {}
 
     bool is_bucket() const { return id < 0; }
+    bool is_root() const { return (depth == 0); }
   };
 
   template <typename F>
