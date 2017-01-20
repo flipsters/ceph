@@ -6,7 +6,7 @@
 	url = https://github.com/ceph/libs3.git
 [submodule "src/civetweb"]
 	path = src/civetweb
-	url = https://github.com/ceph/civetweb
+	url = https://github.com/Flipkart/civetweb
 [submodule "src/erasure-code/jerasure/jerasure"]
 	path = src/erasure-code/jerasure/jerasure
 	url = https://github.com/ceph/jerasure.git
