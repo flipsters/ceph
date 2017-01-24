@@ -1,3 +1,9 @@
+ceph (0.94.6-1~bpo80+1.fk1) stable; urgency=low
+
+  * Flipkart release of v0.94.6 with patches
+
+ -- Abhishek Varshney <abhishek.varshney@flipkart.com>  Sat, 10 Sep 2016 15:08:09 +0000
+
 ceph (0.94.6-1) stable; urgency=low
 
   * New upstream release
