@@ -60,6 +60,8 @@
 #include "rgw_civetweb.h"
 #include "rgw_civetweb_log.h"
 
+#include "rgw_rate_limit.h"
+
 #include "civetweb/civetweb.h"
 
 #include <map>
@@ -592,6 +594,14 @@ static int process_request(RGWRados *store, RGWREST *rest, RGWRequest *req, RGWC
     abort_early(s, op, -ERR_USER_SUSPENDED);
     goto done;
   }
+
+  // Anonymous user is also regulated by rate limit, check the rate limit in config file.
+  if ( rgw_rate_limit_ok(s->user.user_id, op) == false ) {
+    dout(20) << "user: " << s->user.user_id << " exceeded API limit" << dendl;
+    abort_early(s, op, -ERR_SLOW_DOWN);
+    goto done;
+  }
+
   req->log(s, "reading permissions");
   ret = handler->read_permissions(op);
   if (ret < 0) {
@@ -647,6 +657,25 @@ done:
   int http_ret = s->err.http_ret;
 
   req->log_format(s, "http status=%d", http_ret);
+  switch (http_ret / 100) {
+    case 1:
+      perfcounter->inc(l_rgw_http_1xx_count);
+      break;
+    case 2:
+      perfcounter->inc(l_rgw_http_2xx_count);
+      break;
+    case 3:
+      perfcounter->inc(l_rgw_http_3xx_count);
+      break;
+    case 4:
+      perfcounter->inc(l_rgw_http_4xx_count);
+      break;
+    case 5:
+      perfcounter->inc(l_rgw_http_5xx_count);
+      break;
+    default:
+      perfcounter->inc(l_rgw_http_NULL_count);
+  }
 
   if (handler)
     handler->put_op(op);
@@ -1081,6 +1110,11 @@ int main(int argc, const char **argv)
   }
   r = rgw_perf_start(g_ceph_context);
 
+  if (r < 0) {
+    derr << "ERROR: failed starting percentile perf" << dendl;
+    return -r;
+  }
+
   rgw_rest_init(g_ceph_context, store->region);
 
   mutex.Lock();
@@ -1153,6 +1187,11 @@ int main(int argc, const char **argv)
   register_async_signal_handler(SIGINT, handle_sigterm);
   register_async_signal_handler(SIGUSR1, handle_sigterm);
   sighandler_alrm = signal(SIGALRM, godown_alarm);
+
+  if ( rgw_rate_limit_init(g_ceph_context) < 0 ) {
+    derr << "ERROR: Failed to init rate limiter" << dendl;
+    exit(1);
+  }
 
   list<string> frontends;
   get_str_list(g_conf->rgw_frontends, ",", frontends);

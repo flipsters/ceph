@@ -18,9 +18,13 @@
 #include "common/ceph_crypto.h"
 #include "common/debug.h"
 #include "common/perf_counters.h"
+#include "common/centile.h"
 
 #include "acconfig.h"
 
+#include <vector>
+#include <cstdlib>
+#include <sstream>
 #include <errno.h>
 #include <string.h>
 #include <string>
@@ -144,6 +148,8 @@ using ceph::crypto::MD5;
 #define ERR_QUOTA_EXCEEDED       2026
 #define ERR_SIGNATURE_NO_MATCH   2027
 #define ERR_INVALID_ACCESS_KEY   2028
+#define ERR_TOO_MANY_REQUESTS    2029
+#define ERR_SLOW_DOWN            2030
 #define ERR_USER_SUSPENDED       2100
 #define ERR_INTERNAL_ERROR       2200
 
@@ -160,6 +166,12 @@ extern PerfCounters *perfcounter;
 
 extern int rgw_perf_start(CephContext *cct);
 extern void rgw_perf_stop(CephContext *cct);
+
+int percentile_perf_start(CephContext *cct);
+void percentile_perf_stop(CephContext *cct);
+
+extern centile::CentileCollection *get_lat_centile;
+extern centile::CentileCollection *put_lat_centile;
 
 enum {
   l_rgw_first = 15000,
@@ -182,6 +194,13 @@ enum {
 
   l_rgw_keystone_token_cache_hit,
   l_rgw_keystone_token_cache_miss,
+
+  l_rgw_http_1xx_count,
+  l_rgw_http_2xx_count,
+  l_rgw_http_3xx_count,
+  l_rgw_http_4xx_count,
+  l_rgw_http_5xx_count,
+  l_rgw_http_NULL_count,
 
   l_rgw_last,
 };
