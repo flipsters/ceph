@@ -144,6 +144,7 @@ RGWReplicaObjectLogger(RGWRados *_store,
                        pool(_pool), prefix(_prefix) {
   if (pool.empty())
     store->get_log_pool_name(pool);
+  // dout(0) << "replica obj logger" << dendl;
 }
 
 int RGWReplicaObjectLogger::create_log_objects(int shards)
@@ -169,6 +170,7 @@ RGWReplicaBucketLogger::RGWReplicaBucketLogger(RGWRados *_store) :
   store->get_log_pool_name(pool);
   prefix = _store->ctx()->_conf->rgw_replica_log_obj_prefix;
   prefix.append(".");
+  // dout(0) << "replica bucket logger" << dendl;
 }
 
 string RGWReplicaBucketLogger::obj_name(const rgw_bucket& bucket, int shard_id, bool index_by_instance)

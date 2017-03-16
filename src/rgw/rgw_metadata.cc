@@ -85,8 +85,10 @@ int RGWMetadataLog::add_entry(RGWRados *store, RGWMetadataHandler *handler, cons
   handler->get_hash_key(section, key, hash_key);
 
   store->shard_name(prefix, cct->_conf->rgw_md_log_max_shards, hash_key, oid);
-  utime_t now = ceph_clock_now(cct);
-  return store->time_log_add(oid, now, section, key, bl);
+  // dout(0) << "skipping (2) meta: add_entry -> A" << dendl;
+  // utime_t now = ceph_clock_now(cct);
+  // return store->time_log_add(oid, now, section, key, bl);
+  return 0;
 }
 
 void RGWMetadataLog::init_list_entries(int shard_id, utime_t& from_time, utime_t& end_time, 

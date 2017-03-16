@@ -1922,6 +1922,7 @@ int RGWRados::log_list_init(const string& prefix, RGWAccessHandle *handle)
 {
   log_list_state *state = new log_list_state;
   const char *log_pool = zone.log_pool.name.c_str();
+  // dout(0) << "log_list_init: " << log_pool << dendl;
   librados::Rados *rad = get_rados_handle();
   int r = rad->ioctx_create(log_pool, state->io_ctx);
   if (r < 0) {
@@ -1958,6 +1959,7 @@ int RGWRados::log_remove(const string& name)
 {
   librados::IoCtx io_ctx;
   const char *log_pool = zone.log_pool.name.c_str();
+  // dout(0) << "log_remove:" << log_pool << dendl;
   librados::Rados *rad = get_rados_handle();
   int r = rad->ioctx_create(log_pool, io_ctx);
   if (r < 0)
@@ -1979,6 +1981,7 @@ int RGWRados::log_show_init(const string& name, RGWAccessHandle *handle)
 {
   log_show_state *state = new log_show_state;
   const char *log_pool = zone.log_pool.name.c_str();
+  // dout(0) << "log_show_init: " << log_pool << dendl;
   librados::Rados *rad = get_rados_handle();
   int r = rad->ioctx_create(log_pool, state->io_ctx);
   if (r < 0) {
@@ -2200,6 +2203,7 @@ int RGWRados::time_log_add(const string& oid, const utime_t& ut, const string& s
   librados::IoCtx io_ctx;
 
   const char *log_pool = zone.log_pool.name.c_str();
+  // dout(0) << "A: pre-cls_log_add(): " << log_pool << dendl;
   librados::Rados *rad = get_rados_handle();
   int r = rad->ioctx_create(log_pool, io_ctx);
   if (r == -ENOENT) {
@@ -2226,6 +2230,7 @@ int RGWRados::time_log_add(const string& oid, list<cls_log_entry>& entries)
   librados::IoCtx io_ctx;
 
   const char *log_pool = zone.log_pool.name.c_str();
+  // dout(0) << "B: pre-cls_log_add(): " << log_pool << dendl;
   librados::Rados *rad = get_rados_handle();
   int r = rad->ioctx_create(log_pool, io_ctx);
   if (r == -ENOENT) {
@@ -2256,6 +2261,7 @@ int RGWRados::time_log_list(const string& oid, utime_t& start_time, utime_t& end
   librados::IoCtx io_ctx;
 
   const char *log_pool = zone.log_pool.name.c_str();
+  // dout(0) << "time log list: " << log_pool << dendl;
   librados::Rados *rad = get_rados_handle();
   int r = rad->ioctx_create(log_pool, io_ctx);
   if (r < 0)
@@ -2279,6 +2285,7 @@ int RGWRados::time_log_info(const string& oid, cls_log_header *header)
   librados::IoCtx io_ctx;
 
   const char *log_pool = zone.log_pool.name.c_str();
+  // dout(0) << "time log info: " << log_pool << dendl;
   librados::Rados *rad = get_rados_handle();
   int r = rad->ioctx_create(log_pool, io_ctx);
   if (r < 0)
@@ -2302,6 +2309,7 @@ int RGWRados::time_log_trim(const string& oid, const utime_t& start_time, const 
   librados::IoCtx io_ctx;
 
   const char *log_pool = zone.log_pool.name.c_str();
+  // dout(0) << "time log trim: " << log_pool << dendl;
   librados::Rados *rad = get_rados_handle();
   int r = rad->ioctx_create(log_pool, io_ctx);
   if (r < 0)
@@ -7893,6 +7901,7 @@ int RGWRados::cls_obj_usage_log_add(const string& oid, rgw_usage_log_info& info)
   librados::IoCtx io_ctx;
 
   const char *usage_log_pool = zone.usage_log_pool.name.c_str();
+  // dout(0) << "usage log add:" << usage_log_pool << dendl;
   librados::Rados *rad = get_rados_handle();
   int r = rad->ioctx_create(usage_log_pool, io_ctx);
   if (r == -ENOENT) {
@@ -7922,6 +7931,7 @@ int RGWRados::cls_obj_usage_log_read(string& oid, string& user, uint64_t start_e
   *is_truncated = false;
 
   const char *usage_log_pool = zone.usage_log_pool.name.c_str();
+  // dout(0) << "usage log read:" << usage_log_pool << dendl;
   librados::Rados *rad = get_rados_handle();
   int r = rad->ioctx_create(usage_log_pool, io_ctx);
   if (r < 0)
@@ -7938,6 +7948,7 @@ int RGWRados::cls_obj_usage_log_trim(string& oid, string& user, uint64_t start_e
   librados::IoCtx io_ctx;
 
   const char *usage_log_pool = zone.usage_log_pool.name.c_str();
+  // dout(0) << "usage log trim:" << usage_log_pool << dendl;
   librados::Rados *rad = get_rados_handle();
   int r = rad->ioctx_create(usage_log_pool, io_ctx);
   if (r < 0)
@@ -8437,6 +8448,7 @@ int RGWStateLog::open_ioctx(librados::IoCtx& ioctx) {
     lderr(store->ctx()) << "ERROR: could not open rados pool" << dendl;
     return r;
   }
+  // TODO: XXX
   return 0;
 }
 

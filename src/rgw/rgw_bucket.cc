@@ -1182,6 +1182,7 @@ int RGWDataChangesLog::renew_entries()
 
     utime_t now = ceph_clock_now(cct);
 
+    // dout(0) << "NOT skipping renew_entries -> B" << dendl;
     int ret = store->time_log_add(oids[miter->first], entries);
     if (ret < 0) {
       /* we don't really need to have a special handling for failed cases here,
@@ -1276,7 +1277,7 @@ int RGWDataChangesLog::add_entry(rgw_bucket& bucket, int shard_id) {
   status->cond = new RefCountedCond;
   status->pending = true;
 
-  string& oid = oids[choose_oid(bs)];
+  // string& oid = oids[choose_oid(bs)];
   utime_t expiration;
 
   int ret;
@@ -1304,7 +1305,9 @@ int RGWDataChangesLog::add_entry(rgw_bucket& bucket, int shard_id) {
 
     ldout(cct, 20) << "RGWDataChangesLog::add_entry() sending update with now=" << now << " cur_expiration=" << expiration << dendl;
 
-    ret = store->time_log_add(oid, now, section, change.key, bl);
+    // dout(0) << "skipping (1) data: add_entry -> A" << dendl;
+    ret = 0;
+    // ret = store->time_log_add(oid, now, section, change.key, bl);
 
     now = ceph_clock_now(cct);
 

@@ -41,6 +41,7 @@ void cls_log_add(librados::ObjectWriteOperation& op, const utime_t& timestamp,
 {
   cls_log_entry entry;
 
+  // dout(0) << "C: pre-cls_log_add() 0" << dendl;
   cls_log_add_prepare_entry(entry, timestamp, section, name, bl);
   cls_log_add(op, entry);
 }
