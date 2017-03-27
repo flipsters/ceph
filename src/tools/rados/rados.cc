@@ -146,8 +146,12 @@ void usage(ostream& out)
 "   cache-flush <obj-name>           flush cache pool object (blocking)\n"
 "   cache-try-flush <obj-name>       flush cache pool object (non-blocking)\n"
 "   cache-evict <obj-name>           evict cache pool object\n"
+"\n"
 "   cache-flush-evict-all            flush+evict all objects\n"
 "   cache-try-flush-evict-all        try-flush+evict all objects\n"
+"   options:\n"
+"       --num-threads                Number of threads for cache-flush-evict-all\n"
+"				     and cache-try-flush-evict-all\n"
 "\n"
 "GLOBAL OPTIONS:\n"
 "   --object_locator object_locator\n"
@@ -1086,47 +1090,117 @@ static int do_cache_evict(IoCtx& io_ctx, string oid)
   return r;
 }
 
-static int do_cache_flush_evict_all(IoCtx& io_ctx, bool blocking)
-{
-  int errors = 0;
-  io_ctx.set_namespace(all_nspaces);
-  try {
-    librados::NObjectIterator i = io_ctx.nobjects_begin();
-    librados::NObjectIterator i_end = io_ctx.nobjects_end();
-    for (; i != i_end; ++i) {
-      int r;
-      cout << i->get_nspace() << "\t" << i->get_oid() << "\t" << i->get_locator() << std::endl;
-      if (i->get_locator().size()) {
-	io_ctx.locator_set_key(i->get_locator());
+struct CacheObject {
+  std::string nspace;
+  std::string oid;
+  std::string loc;
+  const char* pool_name;
+  bool blocking;
+}; 
+
+deque<CacheObject*> flush_evict_queue;
+
+class CacheOp {
+public:
+  int do_cache_flush_evict_all(IoCtx& io_ctx,bool blocking, int num_threads, const char *pool_name) {
+    int errors = 0;
+    ThreadPool tp(g_ceph_context,"do_cache_flush_evict_all",num_threads,"");
+    CacheWQ cache_wq=CacheWQ(&tp);
+    tp.start();
+    try {
+      librados::NObjectIterator i = io_ctx.nobjects_begin();
+      librados::NObjectIterator i_end = io_ctx.nobjects_end();
+      for (; i != i_end; ++i) {
+        CacheObject* cache_obj= new CacheObject();
+        cache_obj->nspace = i->get_nspace();
+        cache_obj->oid = i->get_oid();
+        cache_obj->loc = i->get_locator();
+        cache_obj->pool_name = pool_name;
+        cache_obj->blocking = blocking;
+	cache_wq.queue(cache_obj);
+      } 
+    }
+    catch (const std::runtime_error& e) {
+      cerr << e.what() << std::endl;
+        return -1;
+    }
+    return errors ? -1 : 0;
+  }
+
+private:
+  struct CacheWQ : public ThreadPool::WorkQueue<CacheObject> {
+    CacheWQ(ThreadPool *tp) : ThreadPool::WorkQueue<CacheObject>("CacheOp::CacheWQ", 10, 100, tp) {}
+    bool _enqueue(CacheObject *c) {
+      flush_evict_queue.push_back(c);
+      return true;
+    }
+    void _dequeue(CacheObject *c) {
+      if (!flush_evict_queue.empty())
+        flush_evict_queue.pop_front();
+    }
+    bool _empty() {
+      return flush_evict_queue.empty();
+    }
+    CacheObject *_dequeue() {
+      if (flush_evict_queue.empty())
+          return NULL;
+      CacheObject *c = flush_evict_queue.front();
+      flush_evict_queue.pop_front();
+      return c;
+    }
+    void _process(CacheObject *f,ThreadPool::TPHandle &handle) {
+      int ret;
+      IoCtx io_ctx;
+      Rados rados;
+      ret = rados.init_with_context(g_ceph_context);
+      if (ret) {
+        cerr << "couldn't initialize rados! error " << ret << std::endl;
+        ret = -1;
+        return;
+      }
+      ret = rados.connect();
+      if (ret) {
+        cerr << "couldn't connect to cluster! error " << ret << std::endl;
+        ret = -1;
+        return;
+      }
+      rados.ioctx_create(f->pool_name, io_ctx);
+      io_ctx.set_namespace(all_nspaces);
+      cout << f->nspace << "\t" << f->oid << "\t" << f->loc << std::endl;
+        
+      if (f->loc.size()) {
+        io_ctx.locator_set_key(f->loc);
       } else {
-	io_ctx.locator_set_key(string());
+        io_ctx.locator_set_key(string());
       }
-      io_ctx.set_namespace(i->get_nspace());
-      if (blocking)
-	r = do_cache_flush(io_ctx, i->get_oid());
+      io_ctx.set_namespace(f->nspace);
+      if (f->blocking)
+        ret = do_cache_flush(io_ctx, f->oid);
       else
-	r = do_cache_try_flush(io_ctx, i->get_oid());
-      if (r < 0) {
-	cerr << "failed to flush " << i->get_nspace() << "/" << i->get_oid() << ": "
-	     << cpp_strerror(r) << std::endl;
-	++errors;
-	continue;
-      }
-      r = do_cache_evict(io_ctx, i->get_oid());
-      if (r < 0) {
-	cerr << "failed to evict " << i->get_nspace() << "/" << i->get_oid() << ": "
-	     << cpp_strerror(r) << std::endl;
-	++errors;
-	continue;
+        ret = do_cache_try_flush(io_ctx, f->oid);
+      if (ret < 0) {
+        cerr << "failed to flush " << f->nspace << "/" << f->oid<< ": "
+  	   << cpp_strerror(ret) << std::endl;
+        }
+      ret = do_cache_evict(io_ctx, f->oid);
+      if (ret < 0) {
+        cerr << "failed to evict " << f->nspace << "/" << f->oid << ": "
+  	   << cpp_strerror(ret) << std::endl;
       }
     }
-  }
-  catch (const std::runtime_error& e) {
-    cerr << e.what() << std::endl;
-    return -1;
-  }
-  return errors ? -1 : 0;
-}
+    void _process_finish(CacheObject *c) {
+      delete c;
+    }
+    void _clear() {
+      while (flush_evict_queue.empty()) {
+        CacheObject *c = flush_evict_queue.front();
+        flush_evict_queue.pop_front();
+        delete c;
+      }
+    }
+  };
+};
+
 
 /**********************************************
 
@@ -1156,6 +1230,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   int64_t read_percent = -1;
   uint64_t num_objs = 0;
   int run_length = 0;
+  int num_threads = 1;
 
   bool show_time = false;
   bool wildcard = false;
@@ -1280,6 +1355,12 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   i = opts.find("run-length");
   if (i != opts.end()) {
     if (rados_sistrtoll(i, &run_length)) {
+      return -EINVAL;
+    }
+  }
+  i = opts.find("num-threads");
+  if (i != opts.end()) {
+    if (rados_sistrtoll(i, &num_threads)) {
       return -EINVAL;
     }
   }
@@ -2581,7 +2662,8 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   } else if (strcmp(nargs[0], "cache-flush-evict-all") == 0) {
     if (!pool_name)
       usage_exit();
-    ret = do_cache_flush_evict_all(io_ctx, true);
+    CacheOp cache_op;
+    ret = cache_op.do_cache_flush_evict_all(io_ctx,true,num_threads,pool_name);
     if (ret < 0) {
       cerr << "error from cache-flush-evict-all: "
 	   << cpp_strerror(ret) << std::endl;
@@ -2590,7 +2672,8 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   } else if (strcmp(nargs[0], "cache-try-flush-evict-all") == 0) {
     if (!pool_name)
       usage_exit();
-    ret = do_cache_flush_evict_all(io_ctx, false);
+    CacheOp cache_op;
+    ret = cache_op.do_cache_flush_evict_all(io_ctx,false,num_threads,pool_name);
     if (ret < 0) {
       cerr << "error from cache-try-flush-evict-all: "
 	   << cpp_strerror(ret) << std::endl;
@@ -2705,6 +2788,8 @@ int main(int argc, const char **argv)
       opts["all"] = "true";
     } else if (ceph_argparse_flag(args, i, "--default", (char*)NULL)) {
       opts["default"] = "true";
+    } else if (ceph_argparse_witharg(args, i, &val,  "--num-threads", (char*)NULL)) {
+      opts["num-threads"] = val;
     } else {
       if (val[0] == '-')
         usage_exit();
