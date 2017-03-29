@@ -1,3 +1,18 @@
+ceph (0.94.2-1~bpo70+1.fk7) stable; urgency=low
+
+  * Flipkart upstream release
+    - per-account accept & reject GET / PUT call 'perf' counters
+
+ -- FK D42 team <d42-maintainers@flipkart.com>  Tue, 20 Sep 2016 21:58:05 +0530
+
+ceph (0.94.2-1~bpo70+1.fk6) stable; urgency=low
+
+  * Flipkart upstream release
+    - rate limits for 'anonymous' GET / PUT calls
+    - 'perf' counters for calls rejected due to rate limits
+
+ -- FK D42 team <d42-maintainers@flipkart.com>  Mon, 19 Sep 2016 15:20:37 +0530
+
 ceph (0.94.2-1~bpo70+1.fk5) stable; urgency=low
 
   * Flipkart incremental upstream release
