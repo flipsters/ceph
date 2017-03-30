@@ -141,20 +141,20 @@ static void update_default_limits()
   update_one_default_limit(&default_bucket_delete, bucket_delete_ctrs);
 }
 
-static api_counter_t *parse_limit(const YAML::Node& limit_data)
+static api_counter_t *parse_limit(const YAML::Node *limit_data)
 {
   api_counter_t *api_ctr = new api_counter_t();
   try {
-    if ( !limit_data.size() ) {
+    if ( !limit_data || !(limit_data->size()) ) {
       delete api_ctr;
       return NULL;
     }
 
     unsigned long long limit;
-    limit_data["limit"] >> limit;
+    (*limit_data)["limit"] >> limit;
     api_ctr->limit.set(limit);
     string period_str;
-    limit_data["period"] >> period_str;
+    (*limit_data)["period"] >> period_str;
     if ( (api_ctr->period = parse_period_str(period_str)) == UNDEF ) {
       delete api_ctr;
       return NULL;
@@ -201,22 +201,22 @@ static int load_limit_config_file()
     obj_get_ctr = obj_put_ctr = obj_del_ctr = NULL;
     create_ctr = del_ctr = NULL;
     try {
-      const YAML::Node& object = node["object"];
-      const YAML::Node& bucket = node["bucket"];
+      const YAML::Node *object = node.FindValue("object");
+      const YAML::Node *bucket = node.FindValue("bucket");
 
-      if ( object.size() ) {
-	const YAML::Node& get = object["get"];
+      if ( object && object->size() ) {
+	const YAML::Node *get = object->FindValue("get");
 	obj_get_ctr = parse_limit(get);
-	const YAML::Node& put = object["put"];
+	const YAML::Node *put = object->FindValue("put");
 	obj_put_ctr = parse_limit(put);
-	const YAML::Node& delete_obj = object["delete"];
+	const YAML::Node *delete_obj = object->FindValue("delete");
 	obj_del_ctr = parse_limit(delete_obj);
       }
 
-      if ( bucket.size() ) {
-	const YAML::Node& create = bucket["create"];
+      if ( bucket && bucket->size() ) {
+	const YAML::Node *create = bucket->FindValue("create");
 	create_ctr = parse_limit(create);
-	const YAML::Node& delete_bucket = bucket["delete"];
+	const YAML::Node *delete_bucket = bucket->FindValue("delete");
 	del_ctr = parse_limit(delete_bucket);
       }
     } catch (...) {
