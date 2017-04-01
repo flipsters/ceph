@@ -106,7 +106,11 @@ void Log::set_max_new(int n)
 
 void Log::set_max_recent(int n)
 {
+  pthread_mutex_lock(&m_flush_mutex);
+  m_flush_mutex_holder = pthread_self();
   m_max_recent = n;
+  m_flush_mutex_holder = 0;
+  pthread_mutex_unlock(&m_flush_mutex);
 }
 
 void Log::set_log_file(string fn)
@@ -116,6 +120,8 @@ void Log::set_log_file(string fn)
 
 void Log::reopen_log_file()
 {
+  pthread_mutex_lock(&m_flush_mutex);
+  m_flush_mutex_holder = pthread_self();
   if (m_fd >= 0)
     VOID_TEMP_FAILURE_RETRY(::close(m_fd));
   if (m_log_file.length()) {
@@ -123,6 +129,8 @@ void Log::reopen_log_file()
   } else {
     m_fd = -1;
   }
+  m_flush_mutex_holder = 0;
+  pthread_mutex_unlock(&m_flush_mutex);
 }
 
 void Log::set_syslog_level(int log, int crash)
@@ -233,7 +241,7 @@ void Log::_flush(EntryQueue *t, EntryQueue *requeue, bool crash)
       }
 
       if (do_syslog) {
-	syslog(LOG_USER, "%s%s", buf, s.c_str());
+	syslog(LOG_USER|LOG_DEBUG, "%s%s", buf, s.c_str());
       }
 
       if (do_stderr) {
@@ -255,7 +263,7 @@ void Log::_log_message(const char *s, bool crash)
       cerr << "problem writing to " << m_log_file << ": " << cpp_strerror(r) << std::endl;
   }
   if ((crash ? m_syslog_crash : m_syslog_log) >= 0) {
-    syslog(LOG_USER, "%s", s);
+    syslog(LOG_USER|LOG_DEBUG, "%s", s);
   }
   
   if ((crash ? m_stderr_crash : m_stderr_log) >= 0) {

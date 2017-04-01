@@ -15,6 +15,7 @@ Build-Depends: autoconf,
                default-jdk,
                git,
 	       gdisk,
+               grep,
                javahelper,
                junit4,
                libaio-dev,
@@ -40,7 +41,7 @@ Build-Depends: autoconf,
                libtool,
                libudev-dev,
                libxml2-dev,
-               libyaml-cpp-dev,
+               libyaml-cpp0.3-dev,
 	       lsb-release,
                parted,
                pkg-config,
@@ -49,6 +50,7 @@ Build-Depends: autoconf,
                python-nose,
                python-virtualenv,
                sdparm | hdparm,
+               sed,
                uuid-dev,
                uuid-runtime,
                xfslibs-dev,
@@ -61,9 +63,10 @@ Standards-Version: 3.9.3
 Package: ceph
 Architecture: linux-any
 Depends: binutils,
-         ceph-common (>= 0.78-500),
+         ceph-common (>= 0.94.2-2),
          cryptsetup-bin | cryptsetup,
          gdisk,
+         logrotate,
          parted,
          python,
          python-argparse,
@@ -93,8 +96,8 @@ Architecture: linux-any
 Section: debug
 Priority: extra
 Depends: ceph (= ${binary:Version}), ${misc:Depends}
-Replaces: ceph-test-dbg (<< 0.94-1322)
-Breaks: ceph-test-dbg (<< 0.94-1322)
+Replaces: ceph-test-dbg (<< 0.94.2-2)
+Breaks: ceph-test-dbg (<< 0.94.2-2)
 Description: debugging symbols for ceph
  Ceph is a distributed storage system designed to provide excellent
  performance, reliability, and scalability.
@@ -192,10 +195,12 @@ Depends: librbd1 (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends},
 	 python-requests
 Conflicts: ceph-client-tools
 Replaces: ceph-client-tools,
-	  ceph (<< 0.78-500),
+	  ceph (<< 0.94.2-2),
+	  ceph-test (<< 0.94.5-2),
 	  python-ceph (<< 0.92-1223),
 	  librbd1 (<< 0.92-1238)
-Breaks: ceph (<< 0.78-500),
+Breaks: ceph (<< 0.94.2-2),
+	ceph-test (<< 0.94.5-2),
 	python-ceph (<< 0.92-1223),
 	librbd1 (<< 0.92-1238)
 Suggests: ceph, ceph-mds
@@ -209,7 +214,9 @@ Package: ceph-common-dbg
 Architecture: linux-any
 Depends: ceph-common (= ${binary:Version}), ${misc:Depends}
 Conflicts: ceph-client-tools-dbg
-Replaces: ceph-client-tools-dbg
+Replaces: ceph-client-tools-dbg,
+	  ceph-test-dbg (<< 0.94.5-2)
+Breaks: ceph-test-dbg (<< 0.94.5-2)
 Section: debug
 Priority: extra
 Description: debugging symbols for ceph-common
@@ -422,7 +429,8 @@ Description: Ceph distributed file system client library (development files)
 
 Package: radosgw
 Architecture: linux-any
-Depends: ceph-common (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Depends: ceph-common (= ${binary:Version}), mime-support,
+         ${misc:Depends}, ${shlibs:Depends}
 Description: REST gateway for RADOS distributed object store
  RADOS is a distributed object store used by the Ceph distributed
  storage system.  This package provides a REST gateway to the

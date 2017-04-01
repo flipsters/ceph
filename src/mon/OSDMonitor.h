@@ -26,6 +26,7 @@
 using namespace std;
 
 #include "include/types.h"
+#include "common/simple_cache.hpp"
 #include "msg/Messenger.h"
 
 #include "osd/OSDMap.h"
@@ -134,13 +135,8 @@ private:
 
   map<int,double> osd_weight;
 
-  /*
-   * cache what epochs we think osds have.  this is purely
-   * optimization to try to avoid sending the same inc maps twice.
-   */
-  map<int,epoch_t> osd_epoch;
-
-  void note_osd_has_epoch(int osd, epoch_t epoch);
+  SimpleLRU<version_t, bufferlist> inc_osd_cache;
+  SimpleLRU<version_t, bufferlist> full_osd_cache;
 
   void check_failures(utime_t now);
   bool check_failure(utime_t now, int target_osd, failure_info_t& fi);
@@ -256,7 +252,7 @@ private:
       int64_t base_pool_id, const pg_pool_t *base_pool,
       int *err, ostream *ss) const;
   bool _check_remove_tier(
-      int64_t base_pool_id, const pg_pool_t *base_pool,
+      int64_t base_pool_id, const pg_pool_t *base_pool, const pg_pool_t *tier_pool,
       int *err, ostream *ss) const;
 
   int _prepare_remove_pool(int64_t pool, ostream *ss);
@@ -380,9 +376,7 @@ private:
   bool prepare_remove_snaps(struct MRemoveSnaps *m);
 
  public:
-  OSDMonitor(Monitor *mn, Paxos *p, string service_name)
-  : PaxosService(mn, p, service_name),
-    thrash_map(0), thrash_last_up_osd(-1) { }
+  OSDMonitor(Monitor *mn, Paxos *p, string service_name);
 
   void tick();  // check state, take actions
 
@@ -406,6 +400,9 @@ private:
   void send_latest_now_nodelete(PaxosServiceMessage *m, epoch_t start=0) {
     send_incremental(m, start);
   }
+
+  int get_version(version_t ver, bufferlist& bl);
+  int get_version_full(version_t ver, bufferlist& bl);
 
   epoch_t blacklist(const entity_addr_t& a, utime_t until);
 

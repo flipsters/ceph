@@ -34,6 +34,7 @@ using namespace std;
 #include "msg/Messenger.h"
 
 #include "common/Timer.h"
+#include "common/TracepointProvider.h"
 #include "common/ceph_argparse.h"
 
 #include "global/global_init.h"
@@ -50,6 +51,15 @@ using namespace std;
 #include "erasure-code/ErasureCodePlugin.h"
 
 #define dout_subsys ceph_subsys_osd
+
+namespace {
+
+TracepointProvider::Traits osd_tracepoint_traits("libosd_tp.so",
+                                                 "osd_tracing");
+TracepointProvider::Traits os_tracepoint_traits("libos_tp.so",
+                                                "osd_objectstore_tracing");
+
+} // anonymous namespace
 
 OSD *osd = NULL;
 
@@ -412,11 +422,17 @@ int main(int argc, const char **argv)
     CEPH_FEATURE_MSG_AUTH |
     CEPH_FEATURE_OSD_ERASURE_CODES;
 
+  // All feature bits 0 - 34 should be present from dumpling v0.67 forward
   uint64_t osd_required =
     CEPH_FEATURE_UID |
     CEPH_FEATURE_PGID64 |
     CEPH_FEATURE_OSDENC |
-    CEPH_FEATURE_OSD_SNAPMAPPER;
+    CEPH_FEATURE_OSD_SNAPMAPPER |
+    CEPH_FEATURE_INDEP_PG_MAP |
+    CEPH_FEATURE_OSD_PACKED_RECOVERY |
+    CEPH_FEATURE_RECOVERY_RESERVATION |
+    CEPH_FEATURE_BACKFILL_RESERVATION |
+    CEPH_FEATURE_CHUNKY_SCRUB;
 
   ms_public->set_default_policy(Messenger::Policy::stateless_server(supported, 0));
   ms_public->set_policy_throttlers(entity_name_t::TYPE_CLIENT,
@@ -483,6 +499,9 @@ int main(int argc, const char **argv)
   // Set up crypto, daemonize, etc.
   global_init_daemonize(g_ceph_context, 0);
   common_init_finish(g_ceph_context);
+
+  TracepointProvider::initialize<osd_tracepoint_traits>(g_ceph_context);
+  TracepointProvider::initialize<os_tracepoint_traits>(g_ceph_context);
 
   MonClient mc(g_ceph_context);
   if (mc.build_initial_monmap() < 0)

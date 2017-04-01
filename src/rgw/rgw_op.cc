@@ -809,8 +809,13 @@ int RGWGetObj::handle_user_manifest(const char *prefix)
   if (pos < 0)
     return -EINVAL;
 
-  string bucket_name = prefix_str.substr(0, pos);
-  string obj_prefix = prefix_str.substr(pos + 1);
+  string bucket_name_raw, bucket_name;
+  bucket_name_raw = prefix_str.substr(0, pos);
+  url_decode(bucket_name_raw, bucket_name);
+
+  string obj_prefix_raw, obj_prefix;
+  obj_prefix_raw = prefix_str.substr(pos + 1);
+  url_decode(obj_prefix_raw, obj_prefix);
 
   rgw_bucket bucket;
 
@@ -845,6 +850,12 @@ int RGWGetObj::handle_user_manifest(const char *prefix)
     return r;
 
   s->obj_size = total_len;
+
+  if (!get_data) {
+    bufferlist bl;
+    send_response_data(bl, 0, 0);
+    return 0;
+  }
 
   r = iterate_user_manifest_parts(s->cct, store, ofs, end, bucket, obj_prefix, bucket_policy, NULL, get_obj_user_manifest_iterate_cb, (void *)this);
   if (r < 0)
@@ -1055,7 +1066,7 @@ void RGWStatAccount::execute()
   do {
     RGWUserBuckets buckets;
 
-    ret = rgw_read_user_buckets(store, s->user.user_id, buckets, marker, max_buckets, true);
+    ret = rgw_read_user_buckets(store, s->user.user_id, buckets, marker, max_buckets, false);
     if (ret < 0) {
       /* hmm.. something wrong here.. the user was authenticated, so it
          should exist */
@@ -1401,10 +1412,11 @@ void RGWCreateBucket::execute()
     /* bucket already existed, might have raced with another bucket creation, or
      * might be partial bucket creation that never completed. Read existing bucket
      * info, verify that the reported bucket owner is the current user.
-     * If all is ok then update the user's list of buckets
+     * If all is ok then update the user's list of buckets.
+     * Otherwise inform client about a name conflict.
      */
     if (info.owner.compare(s->user.user_id) != 0) {
-      ret = -ERR_BUCKET_EXISTS;
+      ret = -EEXIST;
       return;
     }
     s->bucket = info.bucket;
@@ -1416,10 +1428,9 @@ void RGWCreateBucket::execute()
     if (ret < 0) {
       ldout(s->cct, 0) << "WARNING: failed to unlink bucket: ret=" << ret << dendl;
     }
-  }
-
-  if (ret == -EEXIST)
+  } else if (ret == -EEXIST || (ret == 0 && existed)) {
     ret = -ERR_BUCKET_EXISTS;
+  }
 }
 
 int RGWDeleteBucket::verify_permission()
@@ -2018,6 +2029,7 @@ void RGWPostObj::execute()
     goto done;
   }
 
+  processor->complete_hash(&hash);
   hash.Final(m);
   buf_to_hex(m, CEPH_CRYPTO_MD5_DIGESTSIZE, calc_md5);
 
@@ -2307,6 +2319,7 @@ int RGWCopyObj::verify_permission()
 
   if (src_bucket_name.compare(dest_bucket_name) == 0) { /* will only happen if s->local_source */
     dest_bucket_info = src_bucket_info;
+    dest_attrs = src_attrs;
   } else {
     ret = store->get_bucket_info(obj_ctx, dest_bucket_name, dest_bucket_info, NULL, &dest_attrs);
     if (ret < 0)
@@ -2559,8 +2572,17 @@ void RGWPutACLs::execute()
   new_policy.encode(bl);
   obj = rgw_obj(s->bucket, s->object);
   map<string, bufferlist> attrs;
-  attrs[RGW_ATTR_ACL] = bl;
+
   store->set_atomic(s->obj_ctx, obj);
+
+  if (!s->object.empty()) {
+    ret = get_obj_attrs(store, s, obj, attrs);
+    if (ret < 0)
+      return;
+  }
+  
+  attrs[RGW_ATTR_ACL] = bl;
+
   if (!s->object.empty()) {
     ret = store->set_attrs(s->obj_ctx, obj, attrs, NULL, ptracker);
   } else {

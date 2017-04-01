@@ -137,7 +137,11 @@
 #include "common/config.h"
 
 #ifdef WITH_LTTNG
+#define TRACEPOINT_DEFINE
+#define TRACEPOINT_PROBE_DYNAMIC_LINKAGE
 #include "tracing/osd.h"
+#undef TRACEPOINT_PROBE_DYNAMIC_LINKAGE
+#undef TRACEPOINT_DEFINE
 #else
 #define tracepoint(...)
 #endif
@@ -530,7 +534,7 @@ void OSDService::agent_entry()
     int max = g_conf->osd_agent_max_ops - agent_ops;
     agent_lock.Unlock();
     if (!pg->agent_work(max)) {
-      dout(10) << __func__ << " " << *pg
+      dout(10) << __func__ << " " << pg->get_pgid()
 	<< " no agent_work, delay for " << g_conf->osd_agent_delay_time
 	<< " seconds" << dendl;
 
@@ -684,8 +688,8 @@ void OSDService::send_message_osd_cluster(int peer, Message *m, epoch_t from_epo
     return;
   }
   const entity_inst_t& peer_inst = next_map->get_cluster_inst(peer);
-  Connection *peer_con = osd->cluster_messenger->get_connection(peer_inst).get();
-  share_map_peer(peer, peer_con, next_map);
+  ConnectionRef peer_con = osd->cluster_messenger->get_connection(peer_inst);
+  share_map_peer(peer, peer_con.get(), next_map);
   peer_con->send_message(m);
   release_map(next_map);
 }
@@ -1543,9 +1547,17 @@ OSD::OSD(CephContext *cct_, ObjectStore *store_,
   op_tracker(cct, cct->_conf->osd_enable_op_tracker, 
                   cct->_conf->osd_num_op_tracker_shard),
   test_ops_hook(NULL),
-  op_shardedwq(cct->_conf->osd_op_num_shards, this, 
-    cct->_conf->osd_op_thread_timeout, &osd_op_tp),
-  peering_wq(this, cct->_conf->osd_op_thread_timeout, &osd_tp),
+  op_shardedwq(
+    cct->_conf->osd_op_num_shards,
+    this,
+    cct->_conf->osd_op_thread_timeout,
+    cct->_conf->osd_op_thread_suicide_timeout,
+    &osd_op_tp),
+  peering_wq(
+    this,
+    cct->_conf->osd_op_thread_timeout,
+    cct->_conf->osd_op_thread_suicide_timeout,
+    &osd_tp),
   map_lock("OSD::map_lock"),
   pg_map_lock("OSD::pg_map_lock"),
   debug_drop_pg_create_probability(cct->_conf->osd_debug_drop_pg_create_probability),
@@ -1557,14 +1569,38 @@ OSD::OSD(CephContext *cct_, ObjectStore *store_,
   pg_stat_queue_lock("OSD::pg_stat_queue_lock"),
   osd_stat_updated(false),
   pg_stat_tid(0), pg_stat_tid_flushed(0),
-  command_wq(this, cct->_conf->osd_command_thread_timeout, &command_tp),
+  command_wq(
+    this,
+    cct->_conf->osd_command_thread_timeout,
+    cct->_conf->osd_command_thread_suicide_timeout,
+    &command_tp),
   recovery_ops_active(0),
-  recovery_wq(this, cct->_conf->osd_recovery_thread_timeout, &recovery_tp),
+  recovery_wq(
+    this,
+    cct->_conf->osd_recovery_thread_timeout,
+    cct->_conf->osd_recovery_thread_suicide_timeout,
+    &recovery_tp),
   replay_queue_lock("OSD::replay_queue_lock"),
-  snap_trim_wq(this, cct->_conf->osd_snap_trim_thread_timeout, &disk_tp),
-  scrub_wq(this, cct->_conf->osd_scrub_thread_timeout, &disk_tp),
-  rep_scrub_wq(this, cct->_conf->osd_scrub_thread_timeout, &disk_tp),
-  remove_wq(store, cct->_conf->osd_remove_thread_timeout, &disk_tp),
+  snap_trim_wq(
+    this,
+    cct->_conf->osd_snap_trim_thread_timeout,
+    cct->_conf->osd_snap_trim_thread_suicide_timeout,
+    &disk_tp),
+  scrub_wq(
+    this,
+    cct->_conf->osd_scrub_thread_timeout,
+    cct->_conf->osd_scrub_thread_suicide_timeout,
+    &disk_tp),
+  rep_scrub_wq(
+    this,
+    cct->_conf->osd_scrub_thread_timeout,
+    cct->_conf->osd_scrub_thread_suicide_timeout,
+    &disk_tp),
+  remove_wq(
+    store,
+    cct->_conf->osd_remove_thread_timeout,
+    cct->_conf->osd_remove_thread_suicide_timeout,
+    &disk_tp),
   service(this)
 {
   monc->set_messenger(client_messenger);
@@ -2257,6 +2293,7 @@ int OSD::shutdown()
       p->second->osr->flush();
     }
   }
+  clear_pg_stat_queue();
   
   // finish ops
   op_shardedwq.drain(); // should already be empty except for lagard PGs
@@ -2787,7 +2824,13 @@ void OSD::load_pgs()
 
     dout(10) << "pgid " << pgid << " coll " << coll_t(pgid) << dendl;
     bufferlist bl;
-    epoch_t map_epoch = PG::peek_map_epoch(store, pgid, &bl);
+    epoch_t map_epoch = 0;
+    int r = PG::peek_map_epoch(store, pgid, &map_epoch, &bl);
+    if (r < 0) {
+      derr << __func__ << " unable to peek at " << pgid << " metadata, skipping"
+	   << dendl;
+      continue;
+    }
 
     PG *pg = NULL;
     if (map_epoch > 0) {
@@ -2980,6 +3023,8 @@ void OSD::build_past_intervals_parallel()
       }
       assert(last_map);
 
+      boost::scoped_ptr<IsPGRecoverablePredicate> recoverable(
+        pg->get_is_recoverable_predicate());
       std::stringstream debug;
       bool new_interval = pg_interval_t::check_new_interval(
 	p.primary,
@@ -2992,6 +3037,7 @@ void OSD::build_past_intervals_parallel()
 	pg->info.history.last_epoch_clean,
 	cur_map, last_map,
 	pgid,
+        recoverable.get(),
 	&pg->past_intervals,
 	&debug);
       if (new_interval) {
@@ -2999,6 +3045,8 @@ void OSD::build_past_intervals_parallel()
 		 << " " << debug.str() << dendl;
 	p.old_up = up;
 	p.old_acting = acting;
+	p.primary = primary;
+	p.up_primary = up_primary;
 	p.same_interval_since = cur_epoch;
       }
     }
@@ -4608,21 +4656,17 @@ void OSD::send_alive()
 void OSD::send_failures()
 {
   assert(osd_lock.is_locked());
-  bool locked = false;
-  if (!failure_queue.empty()) {
-    heartbeat_lock.Lock();
-    locked = true;
-  }
+  Mutex::Locker l(heartbeat_lock);
   utime_t now = ceph_clock_now(cct);
   while (!failure_queue.empty()) {
     int osd = failure_queue.begin()->first;
     int failed_for = (int)(double)(now - failure_queue.begin()->second);
     entity_inst_t i = osdmap->get_inst(osd);
-    monc->send_mon_message(new MOSDFailure(monc->get_fsid(), i, failed_for, osdmap->get_epoch()));
+    monc->send_mon_message(new MOSDFailure(monc->get_fsid(), i, failed_for,
+					   osdmap->get_epoch()));
     failure_pending[osd] = i;
     failure_queue.erase(osd);
   }
-  if (locked) heartbeat_lock.Unlock();
 }
 
 void OSD::send_still_alive(epoch_t epoch, const entity_inst_t &i)
@@ -5878,6 +5922,30 @@ bool OSD::scrub_random_backoff()
   return false;
 }
 
+OSDService::ScrubJob::ScrubJob(const spg_t& pg, const utime_t& timestamp, bool must)
+  : pgid(pg),
+    sched_time(timestamp),
+    deadline(timestamp)
+{
+  // if not explicitly requested, postpone the scrub with a random delay
+  if (!must) {
+    sched_time += g_conf->osd_scrub_min_interval;
+    if (g_conf->osd_scrub_interval_randomize_ratio > 0) {
+      sched_time += rand() % (int)(g_conf->osd_scrub_min_interval *
+				   g_conf->osd_scrub_interval_randomize_ratio);
+    }
+    deadline += g_conf->osd_scrub_max_interval;
+  }
+}
+
+bool OSDService::ScrubJob::ScrubJob::operator<(const OSDService::ScrubJob& rhs) const {
+  if (sched_time < rhs.sched_time)
+    return true;
+  if (sched_time > rhs.sched_time)
+    return false;
+  return pgid < rhs.pgid;
+}
+
 bool OSD::scrub_time_permit(utime_t now)
 {
   struct tm bdt; 
@@ -5894,91 +5962,73 @@ bool OSD::scrub_time_permit(utime_t now)
     }    
   }
   if (!time_permit) {
-    dout(20) << "scrub_should_schedule should run between " << cct->_conf->osd_scrub_begin_hour
+    dout(20) << __func__ << " should run between " << cct->_conf->osd_scrub_begin_hour
             << " - " << cct->_conf->osd_scrub_end_hour
             << " now " << bdt.tm_hour << " = no" << dendl;
   } else {
-    dout(20) << "scrub_should_schedule should run between " << cct->_conf->osd_scrub_begin_hour
+    dout(20) << __func__ << " should run between " << cct->_conf->osd_scrub_begin_hour
             << " - " << cct->_conf->osd_scrub_end_hour
             << " now " << bdt.tm_hour << " = yes" << dendl;
   }
   return time_permit;
 }
 
-bool OSD::scrub_should_schedule()
+bool OSD::scrub_load_below_threshold()
 {
-  if (!scrub_time_permit(ceph_clock_now(cct))) {
-    return false;
-  }
   double loadavgs[1];
   if (getloadavg(loadavgs, 1) != 1) {
-    dout(10) << "scrub_should_schedule couldn't read loadavgs\n" << dendl;
+    dout(10) << __func__ << " couldn't read loadavgs\n" << dendl;
     return false;
   }
 
   if (loadavgs[0] >= cct->_conf->osd_scrub_load_threshold) {
-    dout(20) << "scrub_should_schedule loadavg " << loadavgs[0]
+    dout(20) << __func__ << " loadavg " << loadavgs[0]
 	     << " >= max " << cct->_conf->osd_scrub_load_threshold
 	     << " = no, load too high" << dendl;
     return false;
+  } else {
+    dout(20) << __func__ << " loadavg " << loadavgs[0]
+	     << " < max " << cct->_conf->osd_scrub_load_threshold
+	     << " = yes" << dendl;
+    return true;
   }
-
-  dout(20) << "scrub_should_schedule loadavg " << loadavgs[0]
-	   << " < max " << cct->_conf->osd_scrub_load_threshold
-	   << " = yes" << dendl;
-  return loadavgs[0] < cct->_conf->osd_scrub_load_threshold;
 }
 
 void OSD::sched_scrub()
 {
-  assert(osd_lock.is_locked());
-
-  bool load_is_low = scrub_should_schedule();
-
+  utime_t now = ceph_clock_now(cct);
+  bool time_permit = scrub_time_permit(now);
+  bool load_is_low = scrub_load_below_threshold();
   dout(20) << "sched_scrub load_is_low=" << (int)load_is_low << dendl;
 
-  utime_t now = ceph_clock_now(cct);
-  
-  //dout(20) << " " << last_scrub_pg << dendl;
-
-  pair<utime_t, spg_t> pos;
-  if (service.first_scrub_stamp(&pos)) {
+  OSDService::ScrubJob scrub;
+  if (service.first_scrub_stamp(&scrub)) {
     do {
-      utime_t t = pos.first;
-      spg_t pgid = pos.second;
-      dout(30) << "sched_scrub examine " << pgid << " at " << t << dendl;
+      dout(30) << "sched_scrub examine " << scrub.pgid << " at " << scrub.sched_time << dendl;
 
-      utime_t diff = now - t;
-      if ((double)diff < cct->_conf->osd_scrub_min_interval) {
-	dout(10) << "sched_scrub " << pgid << " at " << t
-		 << ": " << (double)diff << " < min (" << cct->_conf->osd_scrub_min_interval << " seconds)" << dendl;
-	break;
-      }
-      if ((double)diff < cct->_conf->osd_scrub_max_interval && !load_is_low) {
+      if (scrub.sched_time > now) {
 	// save ourselves some effort
-	dout(10) << "sched_scrub " << pgid << " high load at " << t
-		 << ": " << (double)diff << " < max (" << cct->_conf->osd_scrub_max_interval << " seconds)" << dendl;
+	dout(10) << "sched_scrub " << scrub.pgid << " schedued at " << scrub.sched_time
+		 << " > " << now << dendl;
 	break;
       }
 
-      PG *pg = _lookup_lock_pg(pgid);
-      if (pg) {
-	if (pg->get_pgbackend()->scrub_supported() && pg->is_active() &&
-	    (load_is_low ||
-	     (double)diff >= cct->_conf->osd_scrub_max_interval ||
-	     pg->scrubber.must_scrub)) {
-	  dout(10) << "sched_scrub scrubbing " << pgid << " at " << t
-		   << (pg->scrubber.must_scrub ? ", explicitly requested" :
-		   ( (double)diff >= cct->_conf->osd_scrub_max_interval ? ", diff >= max" : ""))
-		   << dendl;
-	  if (pg->sched_scrub()) {
-	    pg->unlock();
-	    break;
-	  }
+      PG *pg = _lookup_lock_pg(scrub.pgid);
+      if (!pg)
+	continue;
+      if (pg->get_pgbackend()->scrub_supported() && pg->is_active() &&
+	  (scrub.deadline < now || (time_permit && load_is_low))) {
+	dout(10) << "sched_scrub scrubbing " << scrub.pgid << " at " << scrub.sched_time
+		 << (pg->scrubber.must_scrub ? ", explicitly requested" :
+		     (load_is_low ? ", load_is_low" : " deadline < now"))
+		 << dendl;
+	if (pg->sched_scrub()) {
+	  pg->unlock();
+	  break;
 	}
-	pg->unlock();
       }
-    } while  (service.next_scrub_stamp(pos, &pos));
+      pg->unlock();
+    } while (service.next_scrub_stamp(scrub, &scrub));
   }    
   dout(20) << "sched_scrub done" << dendl;
 }
@@ -7807,11 +7857,11 @@ void OSD::check_replay_queue()
       PG *pg = _lookup_lock_pg_with_map_lock_held(pgid);
       pg_map_lock.unlock();
       dout(10) << "check_replay_queue " << *pg << dendl;
-      if (pg->is_active() &&
-          pg->is_replay() &&
+      if ((pg->is_active() || pg->is_activating()) &&
+	  pg->is_replay() &&
           pg->is_primary() &&
           pg->replay_until == p->second) {
-        pg->replay_queued_ops();
+	pg->replay_queued_ops();
       }
       pg->unlock();
     } else {

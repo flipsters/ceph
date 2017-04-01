@@ -31,14 +31,15 @@ namespace librbd {
     ~ImageWatcher();
 
     bool is_lock_supported() const;
+    bool is_lock_supported(const RWLock &snap_lock) const;
     bool is_lock_owner() const;
 
     int register_watch();
     int unregister_watch();
 
     int try_lock();
-    int request_lock(const boost::function<int(AioCompletion*)>& restart_op,
-		     AioCompletion* c);
+    void request_lock(const boost::function<void(AioCompletion*)>& restart_op,
+		      AioCompletion* c);
     void prepare_unlock();
     void cancel_unlock();
     int unlock();
@@ -80,7 +81,7 @@ namespace librbd {
     };
 
     typedef std::pair<Context *, ProgressContext *> AsyncRequest;
-    typedef std::pair<boost::function<int(AioCompletion *)>,
+    typedef std::pair<boost::function<void(AioCompletion *)>,
 		      AioCompletion *> AioRequest;
 
     class Task {
@@ -157,6 +158,31 @@ namespace librbd {
       RemoteProgressContext *m_prog_ctx;
     };
 
+    struct C_NotifyAck : public Context {
+      ImageWatcher *image_watcher;
+      uint64_t notify_id;
+      uint64_t handle;
+      bufferlist out;
+
+      C_NotifyAck(ImageWatcher *image_watcher, uint64_t notify_id,
+                  uint64_t handle);
+      virtual void finish(int r);
+    };
+
+    struct C_SnapCreateResponseMessage : public Context {
+      ImageWatcher *image_watcher;
+      C_NotifyAck *notify_ack;
+      std::string snap_name;
+
+      C_SnapCreateResponseMessage(ImageWatcher *image_watcher,
+                                  C_NotifyAck *notify_ack,
+                                  const std::string &snap_name)
+        : image_watcher(image_watcher), notify_ack(notify_ack),
+          snap_name(snap_name) {
+      }
+      virtual void finish(int r);
+    };
+
     struct HandlePayloadVisitor : public boost::static_visitor<void> {
       ImageWatcher *image_watcher;
       uint64_t notify_id;
@@ -168,17 +194,12 @@ namespace librbd {
       {
       }
 
-      inline void operator()(const WatchNotify::HeaderUpdatePayload &payload) const {
-	bufferlist out;
-	image_watcher->handle_payload(payload, &out);
-	image_watcher->acknowledge_notify(notify_id, handle, out);
-      }
-
       template <typename Payload>
       inline void operator()(const Payload &payload) const {
-	bufferlist out;
-	image_watcher->handle_payload(payload, &out);
-	image_watcher->acknowledge_notify(notify_id, handle, out);
+        C_NotifyAck *ctx = new C_NotifyAck(image_watcher, notify_id, handle);
+        if (image_watcher->handle_payload(payload, ctx)) {
+          ctx->complete(0);
+        }
       }
     };
 
@@ -218,6 +239,7 @@ namespace librbd {
     void schedule_cancel_async_requests();
     void cancel_async_requests();
 
+    void set_owner_client_id(const WatchNotify::ClientId &client_id);
     WatchNotify::ClientId get_client_id();
 
     void notify_release_lock();
@@ -240,26 +262,26 @@ namespace librbd {
     int notify_async_complete(const WatchNotify::AsyncRequestId &id,
 			      int r);
 
-    void handle_payload(const WatchNotify::HeaderUpdatePayload& payload,
-		        bufferlist *out);
-    void handle_payload(const WatchNotify::AcquiredLockPayload& payload,
-		        bufferlist *out);
-    void handle_payload(const WatchNotify::ReleasedLockPayload& payload,
-		        bufferlist *out);
-    void handle_payload(const WatchNotify::RequestLockPayload& payload,
-		        bufferlist *out);
-    void handle_payload(const WatchNotify::AsyncProgressPayload& payload,
-		        bufferlist *out);
-    void handle_payload(const WatchNotify::AsyncCompletePayload& payload,
-		        bufferlist *out);
-    void handle_payload(const WatchNotify::FlattenPayload& payload,
-		        bufferlist *out);
-    void handle_payload(const WatchNotify::ResizePayload& payload,
-		        bufferlist *out);
-    void handle_payload(const WatchNotify::SnapCreatePayload& payload,
-		        bufferlist *out);
-    void handle_payload(const WatchNotify::UnknownPayload& payload,
-		        bufferlist *out);
+    bool handle_payload(const WatchNotify::HeaderUpdatePayload& payload,
+		        C_NotifyAck *ctx);
+    bool handle_payload(const WatchNotify::AcquiredLockPayload& payload,
+		        C_NotifyAck *ctx);
+    bool handle_payload(const WatchNotify::ReleasedLockPayload& payload,
+		        C_NotifyAck *ctx);
+    bool handle_payload(const WatchNotify::RequestLockPayload& payload,
+		        C_NotifyAck *ctx);
+    bool handle_payload(const WatchNotify::AsyncProgressPayload& payload,
+		        C_NotifyAck *ctx);
+    bool handle_payload(const WatchNotify::AsyncCompletePayload& payload,
+		        C_NotifyAck *ctx);
+    bool handle_payload(const WatchNotify::FlattenPayload& payload,
+		        C_NotifyAck *ctx);
+    bool handle_payload(const WatchNotify::ResizePayload& payload,
+		        C_NotifyAck *ctx);
+    bool handle_payload(const WatchNotify::SnapCreatePayload& payload,
+		        C_NotifyAck *ctx);
+    bool handle_payload(const WatchNotify::UnknownPayload& payload,
+		        C_NotifyAck *ctx);
 
     void handle_notify(uint64_t notify_id, uint64_t handle, bufferlist &bl);
     void handle_error(uint64_t cookie, int err);

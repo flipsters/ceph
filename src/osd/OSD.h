@@ -505,37 +505,51 @@ public:
   Mutex sched_scrub_lock;
   int scrubs_pending;
   int scrubs_active;
-  set< pair<utime_t,spg_t> > last_scrub_pg;
+  struct ScrubJob {
+    /// pg to be scrubbed
+    spg_t pgid;
+    /// a time scheduled for scrub. but the scrub could be delayed if system
+    /// load is too high or it fails to fall in the scrub hours
+    utime_t sched_time;
+    /// the hard upper bound of scrub time
+    utime_t deadline;
+    ScrubJob() {}
+    explicit ScrubJob(const spg_t& pg, const utime_t& timestamp, bool must = true);
+    /// order the jobs by sched_time
+    bool operator<(const ScrubJob& rhs) const;
+  };
+  set<ScrubJob> sched_scrub_pg;
 
-  void reg_last_pg_scrub(spg_t pgid, utime_t t) {
+  /// @returns the scrub_reg_stamp used for unregister the scrub job
+  utime_t reg_pg_scrub(spg_t pgid, utime_t t, bool must) {
+    ScrubJob scrub(pgid, t, must);
     Mutex::Locker l(sched_scrub_lock);
-    last_scrub_pg.insert(pair<utime_t,spg_t>(t, pgid));
+    sched_scrub_pg.insert(scrub);
+    return scrub.sched_time;
   }
-  void unreg_last_pg_scrub(spg_t pgid, utime_t t) {
+  void unreg_pg_scrub(spg_t pgid, utime_t t) {
     Mutex::Locker l(sched_scrub_lock);
-    pair<utime_t,spg_t> p(t, pgid);
-    set<pair<utime_t,spg_t> >::iterator it = last_scrub_pg.find(p);
-    assert(it != last_scrub_pg.end());
-    last_scrub_pg.erase(it);
+    size_t removed = sched_scrub_pg.erase(ScrubJob(pgid, t));
+    assert(removed);
   }
-  bool first_scrub_stamp(pair<utime_t, spg_t> *out) {
+  bool first_scrub_stamp(ScrubJob *out) {
     Mutex::Locker l(sched_scrub_lock);
-    if (last_scrub_pg.empty())
+    if (sched_scrub_pg.empty())
       return false;
-    set< pair<utime_t, spg_t> >::iterator iter = last_scrub_pg.begin();
+    set<ScrubJob>::iterator iter = sched_scrub_pg.begin();
     *out = *iter;
     return true;
   }
-  bool next_scrub_stamp(pair<utime_t, spg_t> next,
-			pair<utime_t, spg_t> *out) {
+  bool next_scrub_stamp(const ScrubJob& next,
+			ScrubJob *out) {
     Mutex::Locker l(sched_scrub_lock);
-    if (last_scrub_pg.empty())
+    if (sched_scrub_pg.empty())
       return false;
-    set< pair<utime_t, spg_t> >::iterator iter = last_scrub_pg.lower_bound(next);
-    if (iter == last_scrub_pg.end())
+    set<ScrubJob>::iterator iter = sched_scrub_pg.lower_bound(next);
+    if (iter == sched_scrub_pg.end())
       return false;
     ++iter;
-    if (iter == last_scrub_pg.end())
+    if (iter == sched_scrub_pg.end())
       return false;
     *out = *iter;
     return true;
@@ -1244,6 +1258,13 @@ public:
 	 ++i) {
       clear_session_waiting_on_pg(session, *i);
     }
+    /* Messages have connection refs, we need to clear the
+     * connection->session->message->connection
+     * cycles which result.
+     * Bug #12338
+     */
+    session->waiting_on_map.clear();
+    session->waiting_for_pg.clear();
   }
   void register_session_waiting_on_pg(Session *session, spg_t pgid) {
     Mutex::Locker l(session_waiting_lock);
@@ -1452,8 +1473,8 @@ private:
     uint32_t num_shards;
 
     public:
-      ShardedOpWQ(uint32_t pnum_shards, OSD *o, time_t ti, ShardedThreadPool* tp):
-        ShardedThreadPool::ShardedWQ < pair <PGRef, OpRequestRef> >(ti, ti*10, tp),
+      ShardedOpWQ(uint32_t pnum_shards, OSD *o, time_t ti, time_t si, ShardedThreadPool* tp):
+        ShardedThreadPool::ShardedWQ < pair <PGRef, OpRequestRef> >(ti, si, tp),
         osd(o), num_shards(pnum_shards) {
         for(uint32_t i = 0; i < num_shards; i++) {
           char lock_name[32] = {0};
@@ -1563,9 +1584,9 @@ private:
     list<PG*> peering_queue;
     OSD *osd;
     set<PG*> in_use;
-    PeeringWQ(OSD *o, time_t ti, ThreadPool *tp)
+    PeeringWQ(OSD *o, time_t ti, time_t si, ThreadPool *tp)
       : ThreadPool::BatchWorkQueue<PG>(
-	"OSD::PeeringWQ", ti, ti*10, tp), osd(o) {}
+	"OSD::PeeringWQ", ti, si, tp), osd(o) {}
 
     void _dequeue(PG *pg) {
       for (list<PG*>::iterator i = peering_queue.begin();
@@ -1944,8 +1965,8 @@ protected:
   list<Command*> command_queue;
   struct CommandWQ : public ThreadPool::WorkQueue<Command> {
     OSD *osd;
-    CommandWQ(OSD *o, time_t ti, ThreadPool *tp)
-      : ThreadPool::WorkQueue<Command>("OSD::CommandWQ", ti, 0, tp), osd(o) {}
+    CommandWQ(OSD *o, time_t ti, time_t si, ThreadPool *tp)
+      : ThreadPool::WorkQueue<Command>("OSD::CommandWQ", ti, si, tp), osd(o) {}
 
     bool _empty() {
       return osd->command_queue.empty();
@@ -1998,8 +2019,8 @@ protected:
 
   struct RecoveryWQ : public ThreadPool::WorkQueue<PG> {
     OSD *osd;
-    RecoveryWQ(OSD *o, time_t ti, ThreadPool *tp)
-      : ThreadPool::WorkQueue<PG>("OSD::RecoveryWQ", ti, ti*10, tp), osd(o) {}
+    RecoveryWQ(OSD *o, time_t ti, time_t si, ThreadPool *tp)
+      : ThreadPool::WorkQueue<PG>("OSD::RecoveryWQ", ti, si, tp), osd(o) {}
 
     bool _empty() {
       return osd->recovery_queue.empty();
@@ -2056,8 +2077,8 @@ protected:
   
   struct SnapTrimWQ : public ThreadPool::WorkQueue<PG> {
     OSD *osd;
-    SnapTrimWQ(OSD *o, time_t ti, ThreadPool *tp)
-      : ThreadPool::WorkQueue<PG>("OSD::SnapTrimWQ", ti, 0, tp), osd(o) {}
+    SnapTrimWQ(OSD *o, time_t ti, time_t si, ThreadPool *tp)
+      : ThreadPool::WorkQueue<PG>("OSD::SnapTrimWQ", ti, si, tp), osd(o) {}
 
     bool _empty() {
       return osd->snap_trim_queue.empty();
@@ -2095,15 +2116,15 @@ protected:
   // -- scrubbing --
   void sched_scrub();
   bool scrub_random_backoff();
-  bool scrub_should_schedule();
+  bool scrub_load_below_threshold();
   bool scrub_time_permit(utime_t now);
 
   xlist<PG*> scrub_queue;
 
   struct ScrubWQ : public ThreadPool::WorkQueue<PG> {
     OSD *osd;
-    ScrubWQ(OSD *o, time_t ti, ThreadPool *tp)
-      : ThreadPool::WorkQueue<PG>("OSD::ScrubWQ", ti, 0, tp), osd(o) {}
+    ScrubWQ(OSD *o, time_t ti, time_t si, ThreadPool *tp)
+      : ThreadPool::WorkQueue<PG>("OSD::ScrubWQ", ti, si, tp), osd(o) {}
 
     bool _empty() {
       return osd->scrub_queue.empty();
@@ -2149,8 +2170,8 @@ protected:
     list<MOSDRepScrub*> rep_scrub_queue;
 
   public:
-    RepScrubWQ(OSD *o, time_t ti, ThreadPool *tp)
-      : ThreadPool::WorkQueue<MOSDRepScrub>("OSD::RepScrubWQ", ti, 0, tp), osd(o) {}
+    RepScrubWQ(OSD *o, time_t ti, time_t si, ThreadPool *tp)
+      : ThreadPool::WorkQueue<MOSDRepScrub>("OSD::RepScrubWQ", ti, si, tp), osd(o) {}
 
     bool _empty() {
       return rep_scrub_queue.empty();
@@ -2202,9 +2223,9 @@ protected:
     public ThreadPool::WorkQueueVal<pair<PGRef, DeletingStateRef> > {
     ObjectStore *&store;
     list<pair<PGRef, DeletingStateRef> > remove_queue;
-    RemoveWQ(ObjectStore *&o, time_t ti, ThreadPool *tp)
+    RemoveWQ(ObjectStore *&o, time_t ti, time_t si, ThreadPool *tp)
       : ThreadPool::WorkQueueVal<pair<PGRef, DeletingStateRef> >(
-	"OSD::RemoveWQ", ti, 0, tp),
+	"OSD::RemoveWQ", ti, si, tp),
 	store(o) {}
 
     bool _empty() {

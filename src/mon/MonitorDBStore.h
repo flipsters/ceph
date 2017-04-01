@@ -291,6 +291,8 @@ class MonitorDBStore
 	  db->compact_range_async(compact.front().first, compact.front().second.first, compact.front().second.second);
 	compact.pop_front();
       }
+    } else {
+      assert(0 == "failed to write to db");
     }
     return r;
   }
@@ -448,11 +450,15 @@ class MonitorDBStore
 
     virtual pair<string,string> get_next_key() {
       assert(iter->valid());
-      pair<string,string> r = iter->raw_key();
-      do {
-	iter->next();
-      } while (iter->valid() && sync_prefixes.count(iter->raw_key().first) == 0);
-      return r;
+
+      for (; iter->valid(); iter->next()) {
+        pair<string,string> r = iter->raw_key();
+        if (sync_prefixes.count(r.first) > 0) {
+          iter->next();
+          return r;
+        }
+      }
+      return pair<string,string>();
     }
 
     virtual bool _is_valid() {
@@ -564,7 +570,8 @@ class MonitorDBStore
     for (iter = prefixes.begin(); iter != prefixes.end(); ++iter) {
       dbt->rmkeys_by_prefix((*iter));
     }
-    db->submit_transaction_sync(dbt);
+    int r = db->submit_transaction_sync(dbt);
+    assert(r >= 0);
   }
 
   int open(ostream &out) {

@@ -1500,6 +1500,9 @@ void ReplicatedBackend::prepare_pull(
 		       recovery_info.clone_subset);
     // FIXME: this may overestimate if we are pulling multiple clones in parallel...
     dout(10) << " pulling " << recovery_info << dendl;
+
+    assert(ssc->snapset.clone_size.count(soid.snap));
+    recovery_info.size = ssc->snapset.clone_size[soid.snap];
   } else {
     // pulling head or unversioned object.
     // always pull the whole thing.
@@ -1802,6 +1805,15 @@ bool ReplicatedBackend::handle_pull_response(
 
   bool first = pi.recovery_progress.first;
   if (first) {
+    // attrs only reference the origin bufferlist (decode from MOSDPGPush message)
+    // whose size is much greater than attrs in recovery. If obc cache it (get_obc maybe
+    // cache the attr), this causes the whole origin bufferlist would not be free until
+    // obc is evicted from obc cache. So rebuild the bufferlist before cache it.
+    for (map<string, bufferlist>::iterator it = pop.attrset.begin();
+         it != pop.attrset.end();
+         ++it) {
+      it->second.rebuild();
+    }
     pi.obc = get_parent()->get_obc(pi.recovery_info.soid, pop.attrset);
     pi.recovery_info.oi = pi.obc->obs.oi;
     pi.recovery_info = recalc_subsets(pi.recovery_info, pi.obc->ssc);

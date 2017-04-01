@@ -45,15 +45,18 @@ namespace librbd {
    * @param c context to finish
    * @param l mutex to lock
    */
-  class C_Request : public Context {
+  class C_ReadRequest : public Context {
   public:
-    C_Request(CephContext *cct, Context *c, Mutex *l)
-      : m_cct(cct), m_ctx(c), m_lock(l) {}
-    virtual ~C_Request() {}
+    C_ReadRequest(CephContext *cct, Context *c, RWLock *owner_lock,
+                  Mutex *cache_lock)
+      : m_cct(cct), m_ctx(c), m_owner_lock(owner_lock),
+        m_cache_lock(cache_lock) {
+    }
     virtual void finish(int r) {
       ldout(m_cct, 20) << "aio_cb completing " << dendl;
       {
-	Mutex::Locker l(*m_lock);
+        RWLock::RLocker owner_locker(*m_owner_lock);
+        Mutex::Locker cache_locker(*m_cache_lock);
 	m_ctx->complete(r);
       }
       ldout(m_cct, 20) << "aio_cb finished" << dendl;
@@ -61,7 +64,8 @@ namespace librbd {
   private:
     CephContext *m_cct;
     Context *m_ctx;
-    Mutex *m_lock;
+    RWLock *m_owner_lock;
+    Mutex *m_cache_lock;
   };
 
   class C_OrderedWrite : public Context {
@@ -105,7 +109,8 @@ namespace librbd {
 			     __u32 trunc_seq, int op_flags, Context *onfinish)
   {
     // on completion, take the mutex and then call onfinish.
-    Context *req = new C_Request(m_ictx->cct, onfinish, &m_lock);
+    Context *req = new C_ReadRequest(m_ictx->cct, onfinish, &m_ictx->owner_lock,
+                                     &m_lock);
 
     {
       if (!m_ictx->object_map.object_may_exist(object_no)) {
@@ -157,32 +162,25 @@ namespace librbd {
 			       uint64_t trunc_size, __u32 trunc_seq,
 			       Context *oncommit)
   {
-    m_ictx->snap_lock.get_read();
-    librados::snap_t snap_id = m_ictx->snap_id;
-    m_ictx->parent_lock.get_read();
-    uint64_t overlap = 0;
-    m_ictx->get_parent_overlap(snap_id, &overlap);
-    m_ictx->parent_lock.put_read();
-    m_ictx->snap_lock.put_read();
-
+    assert(m_ictx->owner_lock.is_locked());
     uint64_t object_no = oid_to_object_no(oid.name, m_ictx->object_prefix);
     
-    // reverse map this object extent onto the parent
-    vector<pair<uint64_t,uint64_t> > objectx;
-    Striper::extent_to_file(m_ictx->cct, &m_ictx->layout,
-			  object_no, 0, m_ictx->layout.fl_object_size,
-			  objectx);
-    uint64_t object_overlap = m_ictx->prune_parent_extents(objectx, overlap);
     write_result_d *result = new write_result_d(oid.name, oncommit);
     m_writes[oid.name].push(result);
     ldout(m_ictx->cct, 20) << "write will wait for result " << result << dendl;
     C_OrderedWrite *req_comp = new C_OrderedWrite(m_ictx->cct, result, this);
-    AioWrite *req = new AioWrite(m_ictx, oid.name,
-				 object_no, off, objectx, object_overlap,
-				 bl, snapc, snap_id,
-				 req_comp);
+    AioWrite *req = new AioWrite(m_ictx, oid.name, object_no, off, bl, snapc,
+                                 req_comp);
     req->send();
     return ++m_tid;
+  }
+
+  void LibrbdWriteback::get_client_lock() {
+    m_ictx->owner_lock.get_read();
+  }
+
+  void LibrbdWriteback::put_client_lock() {
+    m_ictx->owner_lock.put_read();
   }
 
   void LibrbdWriteback::complete_writes(const std::string& oid)

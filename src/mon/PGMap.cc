@@ -373,7 +373,7 @@ void PGMap::calc_stats()
 
   redo_full_sets();
 
-  calc_min_last_epoch_clean();
+  min_last_epoch_clean = calc_min_last_epoch_clean();
 }
 
 void PGMap::update_pg(pg_t pgid, bufferlist& bl)
@@ -650,6 +650,7 @@ void PGMap::dump_basic(Formatter *f) const
   f->dump_stream("stamp") << stamp;
   f->dump_unsigned("last_osdmap_epoch", last_osdmap_epoch);
   f->dump_unsigned("last_pg_scan", last_pg_scan);
+  f->dump_unsigned("min_last_epoch_clean", min_last_epoch_clean);
   f->dump_float("full_ratio", full_ratio);
   f->dump_float("near_full_ratio", nearfull_ratio);
   
@@ -982,7 +983,7 @@ void PGMap::print_osd_blocked_by_stats(std::ostream *ss) const
 void PGMap::recovery_summary(Formatter *f, list<string> *psl,
                              const pool_stat_t& delta_sum) const
 {
-  if (delta_sum.stats.sum.num_objects_degraded) {
+  if (delta_sum.stats.sum.num_objects_degraded && delta_sum.stats.sum.num_object_copies > 0) {
     double pc = (double)delta_sum.stats.sum.num_objects_degraded /
       (double)delta_sum.stats.sum.num_object_copies * (double)100.0;
     char b[20];
@@ -998,7 +999,7 @@ void PGMap::recovery_summary(Formatter *f, list<string> *psl,
       psl->push_back(ss.str());
     }
   }
-  if (delta_sum.stats.sum.num_objects_misplaced) {
+  if (delta_sum.stats.sum.num_objects_misplaced && delta_sum.stats.sum.num_object_copies > 0) {
     double pc = (double)delta_sum.stats.sum.num_objects_misplaced /
       (double)delta_sum.stats.sum.num_object_copies * (double)100.0;
     char b[20];
@@ -1014,7 +1015,7 @@ void PGMap::recovery_summary(Formatter *f, list<string> *psl,
       psl->push_back(ss.str());
     }
   }
-  if (delta_sum.stats.sum.num_objects_unfound) {
+  if (delta_sum.stats.sum.num_objects_unfound && delta_sum.stats.sum.num_objects) {
     double pc = (double)delta_sum.stats.sum.num_objects_unfound /
       (double)delta_sum.stats.sum.num_objects * (double)100.0;
     char b[20];
@@ -1426,7 +1427,7 @@ void PGMap::generate_test_instances(list<PGMap*>& o)
   }
 }
 
-void PGMap::get_filtered_pg_stats(string& state, int64_t poolid, int64_t osdid,
+void PGMap::get_filtered_pg_stats(const string& state, int64_t poolid, int64_t osdid,
                                   bool primary, set<pg_t>& pgs)
 {
   int type = 0;

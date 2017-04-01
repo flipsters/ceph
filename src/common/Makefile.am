@@ -74,7 +74,8 @@ libcommon_internal_la_SOURCES = \
 	common/module.c \
 	common/Readahead.cc \
 	common/Cycles.cc \
-	common/ContextCompletion.cc
+	common/ContextCompletion.cc \
+	common/TracepointProvider.cc
 
 if WITH_RBD
 libcommon_internal_la_SOURCES += \
@@ -235,7 +236,9 @@ noinst_HEADERS += \
 	common/Cycles.h \
 	common/Initialize.h \
 	common/ContextCompletion.h \
-	common/bit_vector.hpp
+	common/bit_vector.hpp \
+	common/valgrind.h \
+	common/TracepointProvider.h
 
 if ENABLE_XIO
 noinst_HEADERS += \

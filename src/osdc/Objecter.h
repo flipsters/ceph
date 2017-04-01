@@ -633,6 +633,8 @@ struct ObjectOperation {
     uint32_t *out_data_digest;
     uint32_t *out_omap_digest;
     vector<pair<osd_reqid_t, version_t> > *out_reqids;
+    uint64_t *out_truncate_seq;
+    uint64_t *out_truncate_size;
     int *prval;
     C_ObjectOperation_copyget(object_copy_cursor_t *c,
 			      uint64_t *s,
@@ -646,13 +648,18 @@ struct ObjectOperation {
 			      uint32_t *dd,
 			      uint32_t *od,
 			      vector<pair<osd_reqid_t, version_t> > *oreqids,
+			      uint64_t *otseq,
+			      uint64_t *otsize,
 			      int *r)
       : cursor(c),
 	out_size(s), out_mtime(m),
 	out_attrs(a), out_data(d), out_omap_header(oh),
 	out_omap_data(o), out_snaps(osnaps), out_snap_seq(osnap_seq),
 	out_flags(flags), out_data_digest(dd), out_omap_digest(od),
-        out_reqids(oreqids), prval(r) {}
+        out_reqids(oreqids),
+        out_truncate_seq(otseq),
+        out_truncate_size(otsize),
+        prval(r) {}
     void finish(int r) {
       if (r < 0)
 	return;
@@ -684,6 +691,10 @@ struct ObjectOperation {
 	  *out_omap_digest = copy_reply.omap_digest;
 	if (out_reqids)
 	  *out_reqids = copy_reply.reqids;
+	if (out_truncate_seq)
+	  *out_truncate_seq = copy_reply.truncate_seq;
+	if (out_truncate_size)
+	  *out_truncate_size = copy_reply.truncate_size;
 	*cursor = copy_reply.cursor;
       } catch (buffer::error& e) {
 	if (prval)
@@ -706,6 +717,8 @@ struct ObjectOperation {
 		uint32_t *out_data_digest,
 		uint32_t *out_omap_digest,
 		vector<pair<osd_reqid_t, version_t> > *out_reqids,
+		uint64_t *truncate_seq,
+		uint64_t *truncate_size,
 		int *prval) {
     OSDOp& osd_op = add_op(CEPH_OSD_OP_COPY_GET);
     osd_op.op.copy_get.max = max;
@@ -718,7 +731,8 @@ struct ObjectOperation {
                                     out_attrs, out_data, out_omap_header,
 				    out_omap_data, out_snaps, out_snap_seq,
 				    out_flags, out_data_digest, out_omap_digest,
-				    out_reqids, prval);
+				    out_reqids, truncate_seq, truncate_size,
+				    prval);
     out_bl[p] = &h->bl;
     out_handler[p] = h;
   }
@@ -1113,16 +1127,18 @@ public:
     object_t target_oid;
     object_locator_t target_oloc;
 
-    bool precalc_pgid;   ///< true if we are directed at base_pgid, not base_oid
-    pg_t base_pgid;      ///< explciti pg target, if any
+    bool precalc_pgid;    ///< true if we are directed at base_pgid, not base_oid
+    pg_t base_pgid;       ///< explciti pg target, if any
 
-    pg_t pgid;           ///< last pg we mapped to
-    unsigned pg_num;     ///< last pg_num we mapped to
-    vector<int> up;      ///< set of up osds for last pg we mapped to
-    vector<int> acting;  ///< set of acting osds for last pg we mapped to
-    int up_primary;      ///< primary for last pg we mapped to based on the up set
-    int acting_primary;  ///< primary for last pg we mapped to based on the acting set
-    int min_size;        ///< the min size of the pool when were were last mapped
+    pg_t pgid;            ///< last pg we mapped to
+    unsigned pg_num;      ///< last pg_num we mapped to
+    unsigned pg_num_mask; ///< last pg_num_mask we mapped to
+    vector<int> up;       ///< set of up osds for last pg we mapped to
+    vector<int> acting;   ///< set of acting osds for last pg we mapped to
+    int up_primary;       ///< primary for last pg we mapped to based on the up set
+    int acting_primary;   ///< primary for last pg we mapped to based on the acting set
+    int size;             ///< the size of the pool when were were last mapped
+    int min_size;         ///< the min size of the pool when were were last mapped
 
     bool used_replica;
     bool paused;
@@ -1135,8 +1151,10 @@ public:
 	base_oloc(oloc),
 	precalc_pgid(false),
 	pg_num(0),
+        pg_num_mask(0),
 	up_primary(-1),
 	acting_primary(-1),
+	size(-1),
 	min_size(-1),
 	used_replica(false),
 	paused(false),
@@ -1456,7 +1474,7 @@ public:
     Context *onfinish, *ontimeout;
     int pool_op;
     uint64_t auid;
-    __u8 crush_rule;
+    int16_t crush_rule;
     snapid_t snapid;
     bufferlist *blp;
 
@@ -1543,6 +1561,7 @@ public:
     // we trigger these from an async finisher
     Context *on_notify_finish;
     bufferlist *notify_result_bl;
+    uint64_t notify_id;
 
     WatchContext *watch_context;
 
@@ -1577,6 +1596,7 @@ public:
 		 on_reg_commit(NULL),
 		 on_notify_finish(NULL),
 		 notify_result_bl(NULL),
+		 notify_id(0),
 		 watch_context(NULL),
 		 session(NULL),
 		 register_tid(0),
@@ -1601,6 +1621,7 @@ public:
   struct C_Linger_Commit : public Context {
     Objecter *objecter;
     LingerOp *info;
+    bufferlist outbl;  // used for notify only
     C_Linger_Commit(Objecter *o, LingerOp *l) : objecter(o), info(l) {
       info->get();
     }
@@ -1608,7 +1629,7 @@ public:
       info->put();
     }
     void finish(int r) {
-      objecter->_linger_commit(info, r);
+      objecter->_linger_commit(info, r, outbl);
     }
   };
 
@@ -1720,7 +1741,7 @@ public:
   void _send_op_account(Op *op);
   void _cancel_linger_op(Op *op);
   void finish_op(OSDSession *session, ceph_tid_t tid);
-  void _finish_op(Op *op);
+  void _finish_op(Op *op, int r);
   static bool is_pg_changed(
     int oldprimary,
     const vector<int>& oldacting,
@@ -1753,7 +1774,7 @@ public:
 
   void _linger_submit(LingerOp *info);
   void _send_linger(LingerOp *info);
-  void _linger_commit(LingerOp *info, int r);
+  void _linger_commit(LingerOp *info, int r, bufferlist& outbl);
   void _linger_reconnect(LingerOp *info, int r);
   void _send_linger_ping(LingerOp *info);
   void _linger_ping(LingerOp *info, int r, utime_t sent, uint32_t register_gen);
@@ -1944,6 +1965,7 @@ private:
 public:
   ceph_tid_t op_submit(Op *op, int *ctx_budget = NULL);
   bool is_active() {
+    RWLock::RLocker l(rwlock);
     return !((!inflight_ops.read()) && linger_ops.empty() && poolstat_ops.empty() && statfs_ops.empty());
   }
 
@@ -2447,7 +2469,7 @@ public:
 private:
   void pool_op_submit(PoolOp *op);
   void _pool_op_submit(PoolOp *op);
-  void _finish_pool_op(PoolOp *op);
+  void _finish_pool_op(PoolOp *op, int r);
   void _do_delete_pool(int64_t pool, Context *onfinish);
 public:
   int create_pool_snap(int64_t pool, string& snapName, Context *onfinish);
@@ -2473,7 +2495,7 @@ public:
   void get_pool_stats(list<string>& pools, map<string,pool_stat_t> *result,
 		      Context *onfinish);
   int pool_stat_op_cancel(ceph_tid_t tid, int r);
-  void _finish_pool_stat_op(PoolStatOp *op);
+  void _finish_pool_stat_op(PoolStatOp *op, int r);
 
   // ---------------------------
   // df stats
@@ -2483,7 +2505,7 @@ public:
   void handle_fs_stats_reply(MStatfsReply *m);
   void get_fs_stats(struct ceph_statfs& result, Context *onfinish);
   int statfs_op_cancel(ceph_tid_t tid, int r);
-  void _finish_statfs_op(StatfsOp *op);
+  void _finish_statfs_op(StatfsOp *op, int r);
 
   // ---------------------------
   // some scatter/gather hackery

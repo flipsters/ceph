@@ -69,6 +69,8 @@
     replicalog get             get replica metadata log entry
     replicalog update          update replica metadata log entry
     replicalog delete          delete replica metadata log entry
+    orphans find               init and run search for leaked rados objects
+    orphans finish             clean up search for leaked rados objects
   options:
      --uid=<id>                user id
      --subuser=<name>          subuser name
@@ -82,6 +84,7 @@
      --access=<access>         Set access permissions for sub-user, should be one
                                of read, write, readwrite, full
      --display-name=<name>
+     --max_buckets             max number of buckets for a user
      --system                  set the system flag on the user
      --bucket=<bucket>
      --pool=<pool>
@@ -122,7 +125,7 @@
      --categories=<list>       comma separated list of categories, used in usage show
      --caps=<caps>             list of caps (e.g., "usage=read, write; user=read"
      --yes-i-really-mean-it    required for certain operations
-  
+     --reset-regions           reset regionmap when regionmap update
   <date> := "YYYY-MM-DD[ hh:mm:ss]"
   
   Quota options:
@@ -130,6 +133,10 @@
      --max-objects             specify max objects (negative value to disable)
      --max-size                specify max size (in bytes, negative value to disable)
      --quota-scope             scope of quota (bucket, user)
+  
+  Orphans search options:
+     --pool                    data pool to scan for leaked rados objects in
+     --num-shards              num of shards to use for keeping the temporary scan info
   
     --conf/-c FILE    read configuration from the given configuration file
     --id/-i ID        set ID portion of my name

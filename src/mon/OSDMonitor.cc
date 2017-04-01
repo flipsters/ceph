@@ -70,6 +70,12 @@ static ostream& _prefix(std::ostream *_dout, Monitor *mon, OSDMap& osdmap) {
 		<< ").osd e" << osdmap.get_epoch() << " ";
 }
 
+OSDMonitor::OSDMonitor(Monitor *mn, Paxos *p, string service_name)
+  : PaxosService(mn, p, service_name),
+    inc_osd_cache(g_conf->mon_osd_cache_size),
+    full_osd_cache(g_conf->mon_osd_cache_size),
+    thrash_map(0), thrash_last_up_osd(-1) { }
+
 bool OSDMonitor::_have_pending_crush()
 {
   return pending_inc.crush.length();
@@ -268,9 +274,6 @@ void OSDMonitor::update_from_paxos(bool *need_bootstrap)
 
   for (int o = 0; o < osdmap.get_max_osd(); o++) {
     if (osdmap.is_down(o)) {
-      // invalidate osd_epoch cache
-      osd_epoch.erase(o);
-
       // populate down -> out map
       if (osdmap.is_in(o) &&
 	  down_pending_out.count(o) == 0) {
@@ -279,11 +282,7 @@ void OSDMonitor::update_from_paxos(bool *need_bootstrap)
       }
     }
   }
-  // blow away any osd_epoch items beyond max_osd
-  map<int,epoch_t>::iterator p = osd_epoch.upper_bound(osdmap.get_max_osd());
-  while (p != osd_epoch.end()) {
-    osd_epoch.erase(p++);
-  }
+  // XXX: need to trim MonSession connected with a osd whose id > max_osd?
 
   /** we don't have any of the feature bit infrastructure in place for
    * supporting primary_temp mappings without breaking old clients/OSDs.*/
@@ -1153,13 +1152,13 @@ bool OSDMonitor::preprocess_get_osdmap(MMonGetOSDMap *m)
   epoch_t last = osdmap.get_epoch();
   int max = g_conf->osd_map_message_max;
   for (epoch_t e = MAX(first, m->get_full_first());
-       e < MIN(last, m->get_full_last()) && max > 0;
+       e <= MIN(last, m->get_full_last()) && max > 0;
        ++e, --max) {
     int r = get_version_full(e, reply->maps[e]);
     assert(r >= 0);
   }
   for (epoch_t e = MAX(first, m->get_inc_first());
-       e < MIN(last, m->get_inc_last()) && max > 0;
+       e <= MIN(last, m->get_inc_last()) && max > 0;
        ++e, --max) {
     int r = get_version(e, reply->incremental_maps[e]);
     assert(r >= 0);
@@ -1614,7 +1613,27 @@ bool OSDMonitor::preprocess_boot(MOSDBoot *m)
             << " doesn't announce support -- ignore" << dendl;
     goto ignore;
   }
-  
+
+  // make sure upgrades stop at hammer
+  //  * OSD_PROXY_FEATURES is the last pre-hammer feature
+  //  * MON_METADATA is the first post-hammer feature
+  if (osdmap.get_num_up_osds() > 0) {
+    if ((m->osd_features & CEPH_FEATURE_MON_METADATA) &&
+	!(osdmap.get_up_osd_features() & CEPH_FEATURE_OSD_PROXY_FEATURES)) {
+      mon->clog->info() << "disallowing boot of post-hammer OSD "
+			<< m->get_orig_source_inst()
+			<< " because one or more up OSDs is pre-hammer\n";
+      goto ignore;
+    }
+    if (!(m->osd_features & CEPH_FEATURE_OSD_PROXY_FEATURES) &&
+	(osdmap.get_up_osd_features() & CEPH_FEATURE_MON_METADATA)) {
+      mon->clog->info() << "disallowing boot of pre-hammer OSD "
+			<< m->get_orig_source_inst()
+			<< " because all up OSDs are post-hammer\n";
+      goto ignore;
+    }
+  }
+
   // already booted?
   if (osdmap.is_up(from) &&
       osdmap.get_inst(from) == m->get_orig_source_inst()) {
@@ -2120,19 +2139,13 @@ void OSDMonitor::send_incremental(PaxosServiceMessage *req, epoch_t first)
 	  << " to " << req->get_orig_source_inst()
 	  << dendl;
 
-  int osd = -1;
-  if (req->get_source().is_osd()) {
-    osd = req->get_source().num();
-    map<int,epoch_t>::iterator p = osd_epoch.find(osd);
-    if (p != osd_epoch.end()) {
-      if (first <= p->second) {
-	dout(10) << __func__ << " osd." << osd << " should already have epoch "
-		 << p->second << dendl;
-	first = p->second + 1;
-	if (first > osdmap.get_epoch())
-	  return;
-      }
-    }
+  MonSession *s = req->get_session();
+  if (s && first <= s->osd_epoch) {
+    dout(10) << __func__ << s->inst << " should already have epoch "
+	     << s->osd_epoch << dendl;
+    first = s->osd_epoch + 1;
+    if (first > osdmap.get_epoch())
+      return;
   }
 
   if (first < get_first_committed()) {
@@ -2151,8 +2164,9 @@ void OSDMonitor::send_incremental(PaxosServiceMessage *req, epoch_t first)
     m->maps[first] = bl;
     mon->send_reply(req, m);
 
-    if (osd >= 0)
-      note_osd_has_epoch(osd, osdmap.get_epoch());
+    if (s) {
+      s->osd_epoch = osdmap.get_epoch();
+    }
     return;
   }
 
@@ -2164,28 +2178,8 @@ void OSDMonitor::send_incremental(PaxosServiceMessage *req, epoch_t first)
   m->newest_map = osdmap.get_epoch();
   mon->send_reply(req, m);
 
-  if (osd >= 0)
-    note_osd_has_epoch(osd, last);
-}
-
-// FIXME: we assume the OSD actually receives this.  if the mon
-// session drops and they reconnect we may not share the same maps
-// with them again, which could cause a strange hang (perhaps stuck
-// 'waiting for osdmap' requests?).  this information should go in the
-// MonSession, but I think these functions need to be refactored in
-// terms of MonSession first for that to work.
-void OSDMonitor::note_osd_has_epoch(int osd, epoch_t epoch)
-{
-  dout(20) << __func__ << " osd." << osd << " epoch " << epoch << dendl;
-  map<int,epoch_t>::iterator p = osd_epoch.find(osd);
-  if (p != osd_epoch.end()) {
-    dout(20) << __func__ << " osd." << osd << " epoch " << epoch
-	     << " (was " << p->second << ")" << dendl;
-    p->second = epoch;
-  } else {
-    dout(20) << __func__ << " osd." << osd << " epoch " << epoch << dendl;
-    osd_epoch[osd] = epoch;
-  }
+  if (s)
+    s->osd_epoch = last;
 }
 
 void OSDMonitor::send_incremental(epoch_t first, MonSession *session,
@@ -2209,6 +2203,7 @@ void OSDMonitor::send_incremental(epoch_t first, MonSession *session,
     m->newest_map = osdmap.get_epoch();
     m->maps[first] = bl;
     session->con->send_message(m);
+    session->osd_epoch = first;
     first++;
   }
 
@@ -2217,15 +2212,36 @@ void OSDMonitor::send_incremental(epoch_t first, MonSession *session,
     MOSDMap *m = build_incremental(first, last);
     session->con->send_message(m);
     first = last + 1;
-
-    if (session->inst.name.is_osd())
-      note_osd_has_epoch(session->inst.name.num(), last);
+    session->osd_epoch = last;
 
     if (onetime)
       break;
   }
 }
 
+int OSDMonitor::get_version(version_t ver, bufferlist& bl)
+{
+    if (inc_osd_cache.lookup(ver, &bl)) {
+      return 0;
+    }
+    int ret = PaxosService::get_version(ver, bl);
+    if (!ret) {
+      inc_osd_cache.add(ver, bl);
+    }
+    return ret;
+}
+
+int OSDMonitor::get_version_full(version_t ver, bufferlist& bl)
+{
+    if (full_osd_cache.lookup(ver, &bl)) {
+      return 0;
+    }
+    int ret = PaxosService::get_version_full(ver, bl);
+    if (!ret) {
+      full_osd_cache.add(ver, bl);
+    }
+    return ret;
+}
 
 
 
@@ -2872,8 +2888,8 @@ bool OSDMonitor::preprocess_command(MMonCommand *m)
         << " pool '" << poolstr << "' (" << pool << ")"
         << " object '" << fullobjname << "' ->"
         << " pg " << pgid << " (" << mpgid << ")"
-        << " -> up (" << up << ", p" << up_p << ") acting ("
-        << acting << ", p" << acting_p << ")";
+        << " -> up (" << pg_vector_string(up) << ", p" << up_p << ") acting ("
+        << pg_vector_string(acting) << ", p" << acting_p << ")";
       rdata.append(ds);
     }
   } else if ((prefix == "osd scrub" ||
@@ -2998,8 +3014,6 @@ bool OSDMonitor::preprocess_command(MMonCommand *m)
   } else if (prefix == "osd crush get-tunable") {
     string tunable;
     cmd_getval(g_ceph_context, cmdmap, "tunable", tunable);
-    int value;
-    cmd_getval(g_ceph_context, cmdmap, "value", value);
     ostringstream rss;
     if (f)
       f->open_object_section("tunable");
@@ -3369,6 +3383,12 @@ stats_out:
     f->flush(rs);
     rs << "\n";
     rdata.append(rs.str());
+  } else if (prefix == "osd crush tree") {
+    boost::scoped_ptr<Formatter> f(Formatter::create(format, "json-pretty", "json-pretty"));
+    f->open_array_section("crush_map_roots");
+    osdmap.crush->dump_tree(f.get());
+    f->close_section();
+    f->flush(rdata);
   } else if (prefix == "osd erasure-code-profile ls") {
     const map<string,map<string,string> > &profiles =
       osdmap.get_erasure_code_profiles();
@@ -3558,7 +3578,7 @@ void OSDMonitor::get_pools_health(
       } else if (warn_threshold > 0 &&
 		 sum.num_bytes >= pool.quota_max_bytes*warn_threshold) {
         ss << "pool '" << pool_name
-           << "' has " << si_t(sum.num_bytes) << " objects"
+           << "' has " << si_t(sum.num_bytes) << " bytes"
            << " (max " << si_t(pool.quota_max_bytes) << ")";
         status = HEALTH_WARN;
       }
@@ -3870,6 +3890,7 @@ int OSDMonitor::prepare_pool_crush_ruleset(const unsigned pool_type,
 					   int *crush_ruleset,
 					   stringstream &ss)
 {
+
   if (*crush_ruleset < 0) {
     switch (pool_type) {
     case pg_pool_t::TYPE_REPLICATED:
@@ -3979,6 +4000,15 @@ int OSDMonitor::prepare_new_pool(string& name, uint64_t auid,
   int r;
   r = prepare_pool_crush_ruleset(pool_type, erasure_code_profile,
 				 crush_ruleset_name, &crush_ruleset, ss);
+  if (r)
+    return r;
+  CrushWrapper newcrush;
+  _get_pending_crush(newcrush);
+  CrushTester tester(newcrush, ss);
+  r = tester.test_with_crushtool(g_conf->crushtool.c_str(),
+				 osdmap.get_max_osd(),
+				 g_conf->mon_lease,
+				 crush_ruleset);
   if (r)
     return r;
   unsigned size, min_size;
@@ -4525,15 +4555,20 @@ bool OSDMonitor::prepare_command_impl(MMonCommand *m,
     // sanity check: test some inputs to make sure this map isn't totally broken
     dout(10) << " testing map" << dendl;
     stringstream ess;
+    // XXX: Use mon_lease as a timeout value for crushtool.
+    // If the crushtool consistently takes longer than 'mon_lease' seconds,
+    // then we would consistently trigger an election before the command
+    // finishes, having a flapping monitor unable to hold quorum.
     CrushTester tester(crush, ess);
     int r = tester.test_with_crushtool(g_conf->crushtool,
+				       osdmap.get_max_osd(),
 				       g_conf->mon_lease);
     if (r < 0) {
       if (r == -EINTR) {
 	ss << "(note: crushtool tests not run because they took too long) ";
       } else {
 	derr << "error on crush map: " << ess.str() << dendl;
-	ss << "Failed to parse crushmap: " << ess.str();
+	ss << "Failed crushmap test: " << ess.str();
 	err = r;
 	goto reply;
       }
@@ -5622,7 +5657,7 @@ bool OSDMonitor::prepare_command_impl(MMonCommand *m,
     }
     if (osdmap.exists(id)) {
       pending_inc.new_weight[id] = ww;
-      ss << "reweighted osd." << id << " to " << w << " (" << ios::hex << ww << ios::dec << ")";
+      ss << "reweighted osd." << id << " to " << w << " (" << std::hex << ww << std::dec << ")";
       getline(ss, rs);
       wait_for_finished_proposal(new Monitor::C_Command(mon, m, 0, rs,
 						get_last_committed() + 1));
@@ -6112,6 +6147,19 @@ done:
       err = -ENOTEMPTY;
       goto reply;
     }
+    if (tp->ec_pool()) {
+      ss << "tier pool '" << tierpoolstr
+	 << "' is an ec pool, which cannot be a tier";
+      err = -ENOTSUP;
+      goto reply;
+    }
+    if ((!tp->removed_snaps.empty() || !tp->snaps.empty()) &&
+	((force_nonempty != "--force-nonempty") ||
+	 (!g_conf->mon_debug_unsafe_allow_tier_with_nonempty_snaps))) {
+      ss << "tier pool '" << tierpoolstr << "' has snapshot state; it cannot be added as a tier without breaking the pool";
+      err = -ENOTEMPTY;
+      goto reply;
+    }
     // go
     pg_pool_t *np = pending_inc.get_new_pool(pool_id, p);
     pg_pool_t *ntp = pending_inc.get_new_pool(tierpool_id, tp);
@@ -6148,7 +6196,7 @@ done:
     const pg_pool_t *tp = osdmap.get_pg_pool(tierpool_id);
     assert(tp);
 
-    if (!_check_remove_tier(pool_id, p, &err, &ss)) {
+    if (!_check_remove_tier(pool_id, p, tp, &err, &ss)) {
       goto reply;
     }
 
@@ -6253,7 +6301,7 @@ done:
       goto reply;
     }
 
-    if (!_check_remove_tier(pool_id, p, &err, &ss)) {
+    if (!_check_remove_tier(pool_id, p, NULL, &err, &ss)) {
       goto reply;
     }
 
@@ -6919,17 +6967,29 @@ bool OSDMonitor::_check_become_tier(
  */
 bool OSDMonitor::_check_remove_tier(
     const int64_t base_pool_id, const pg_pool_t *base_pool,
+    const pg_pool_t *tier_pool,
     int *err, ostream *ss) const
 {
   const std::string &base_pool_name = osdmap.get_pool_name(base_pool_id);
 
-  // If the pool is in use by CephFS, then refuse to remove its
-  // tier
+  // Apply CephFS-specific checks
   const MDSMap &pending_mdsmap = mon->mdsmon()->pending_mdsmap;
   if (pending_mdsmap.pool_in_use(base_pool_id)) {
-    *ss << "pool '" << base_pool_name << "' is in use by CephFS via its tier";
-    *err = -EBUSY;
-    return false;
+    if (base_pool->type != pg_pool_t::TYPE_REPLICATED) {
+      // If the underlying pool is erasure coded, we can't permit the
+      // removal of the replicated tier that CephFS relies on to access it
+      *ss << "pool '" << base_pool_name << "' is in use by CephFS via its tier";
+      *err = -EBUSY;
+      return false;
+    }
+
+    if (tier_pool && tier_pool->cache_mode == pg_pool_t::CACHEMODE_WRITEBACK) {
+      *ss << "pool '" << base_pool_name << "' is in use by CephFS, and this "
+             "tier is still in use as a writeback cache.  Change the cache "
+             "mode and flush the cache before removing it";
+      *err = -EBUSY;
+      return false;
+    }
   }
 
   *err = 0;

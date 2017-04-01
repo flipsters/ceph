@@ -5,6 +5,7 @@ DIST_SUBDIRS =
 BUILT_SOURCES =
 EXTRA_DIST =
 CLEANFILES =
+dist_noinst_DATA =
 
 noinst_HEADERS =
 bin_PROGRAMS =
@@ -34,6 +35,9 @@ check_PROGRAMS =
 
 # tests scripts will be appended to this
 check_SCRIPTS =
+
+# display the output of failed check_SCRIPTS after a failed make check
+export VERBOSE = true
 
 # python unit tests need to know where the scripts are located
 export PYTHONPATH=$(top_srcdir)/src/pybind
@@ -158,10 +162,6 @@ LIBRBD_TYPES = librbd_types.la
 LIBKRBD = libkrbd.la
 LIBCEPHFS = libcephfs.la
 LIBERASURE_CODE = liberasure_code.la
-LIBOSD_TP = tracing/libosd_tp.la
-LIBRADOS_TP = tracing/librados_tp.la
-LIBRBD_TP = tracing/librbd_tp.la
-LIBOS_TP = tracing/libos_tp.la
 
 if WITH_LIBAIO
 LIBOS += -laio
@@ -174,6 +174,10 @@ endif # WITH_LIBZFS
 if WITH_LIBROCKSDB
 LIBOS += libos_rocksdb.la
 endif # WITH_LIBROCKSDB
+
+if WITH_TCMALLOC_MINIMAL
+LIBPERFGLUE += -ltcmalloc_minimal
+endif # WITH_TCMALLOC_MINIMAL
 
 if WITH_TCMALLOC
 LIBPERFGLUE += -ltcmalloc

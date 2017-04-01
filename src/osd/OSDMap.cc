@@ -590,6 +590,10 @@ void OSDMap::Incremental::decode(bufferlist::iterator& bl)
     bl.advance(-struct_v_size);
     decode_classic(bl);
     encode_features = 0;
+    if (struct_v >= 6)
+      encode_features = CEPH_FEATURE_PGID64;
+    else
+      encode_features = 0;
     return;
   }
   {
@@ -641,7 +645,7 @@ void OSDMap::Incremental::decode(bufferlist::iterator& bl)
     if (struct_v >= 2)
       ::decode(encode_features, bl);
     else
-      encode_features = 0;
+      encode_features = CEPH_FEATURE_PGID64 | CEPH_FEATURE_OSDMAP_ENC;
     DECODE_FINISH(bl); // osd-only data
   }
 
@@ -1283,13 +1287,6 @@ int OSDMap::apply_incremental(const Incremental &inc)
   if (inc.new_pool_max != -1)
     pool_max = inc.new_pool_max;
 
-  for (set<int64_t>::const_iterator p = inc.old_pools.begin();
-       p != inc.old_pools.end();
-       ++p) {
-    pools.erase(*p);
-    name_pool.erase(pool_name[*p]);
-    pool_name.erase(*p);
-  }
   for (map<int64_t,pg_pool_t>::const_iterator p = inc.new_pools.begin();
        p != inc.new_pools.end();
        ++p) {
@@ -1303,6 +1300,13 @@ int OSDMap::apply_incremental(const Incremental &inc)
       name_pool.erase(pool_name[p->first]);
     pool_name[p->first] = p->second;
     name_pool[p->second] = p->first;
+  }
+  for (set<int64_t>::const_iterator p = inc.old_pools.begin();
+       p != inc.old_pools.end();
+       ++p) {
+    pools.erase(*p);
+    name_pool.erase(pool_name[*p]);
+    pool_name.erase(*p);
   }
 
   for (map<int32_t,uint32_t>::const_iterator i = inc.new_weight.begin();

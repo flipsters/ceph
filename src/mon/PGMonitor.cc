@@ -1023,8 +1023,8 @@ bool PGMonitor::register_new_pgs()
        ++p) {
     int64_t poolid = p->first;
     pg_pool_t &pool = p->second;
-    int ruleno = pool.get_crush_ruleset();
-    if (!osdmap->crush->rule_exists(ruleno)) 
+    int ruleno = osdmap->crush->find_rule(pool.get_crush_ruleset(), pool.get_type(), pool.get_size());
+    if (ruleno < 0 || !osdmap->crush->rule_exists(ruleno))
       continue;
 
     if (pool.get_last_change() <= pg_map.last_pg_scan ||
@@ -1295,9 +1295,12 @@ int64_t PGMonitor::get_rule_avail(OSDMap& osdmap, int ruleno)
   for (map<int,float>::iterator p = wm.begin(); p != wm.end(); ++p) {
     ceph::unordered_map<int32_t,osd_stat_t>::const_iterator osd_info = pg_map.osd_stat.find(p->first);
     if (osd_info != pg_map.osd_stat.end()) {
-      if (osd_info->second.kb == 0) {
+      if (osd_info->second.kb == 0 || p->second == 0) {
         // osd must be out, hence its stats have been zeroed
         // (unless we somehow managed to have a disk with size 0...)
+        //
+        // (p->second == 0), if osd weight is 0, no need to
+        // calculate proj below.
         continue;
       }
       int64_t proj = (float)((osd_info->second).kb_avail * 1024ull) /
@@ -2113,7 +2116,7 @@ void PGMonitor::get_health(list<pair<health_status_t,string> >& summary,
       ((1000000 - p->second.cache_target_full_ratio_micro) *
        g_conf->mon_cache_target_full_warn_ratio);
     if (p->second.target_max_objects && (uint64_t)st.stats.sum.num_objects >
-	p->second.target_max_objects * ratio / 1000000) {
+	p->second.target_max_objects * (ratio / 1000000.0)) {
       nearfull = true;
       if (detail) {
 	ostringstream ss;
@@ -2125,7 +2128,7 @@ void PGMonitor::get_health(list<pair<health_status_t,string> >& summary,
       }
     }
     if (p->second.target_max_bytes && (uint64_t)st.stats.sum.num_bytes >
-	p->second.target_max_bytes * ratio / 1000000) {
+	p->second.target_max_bytes * (ratio / 1000000.0)) {
       nearfull = true;
       if (detail) {
 	ostringstream ss;

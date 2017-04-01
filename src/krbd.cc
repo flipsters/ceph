@@ -34,6 +34,7 @@
 #include "common/TextTable.h"
 #include "include/assert.h"
 #include "include/stringify.h"
+#include "include/krbd.h"
 #include "mon/MonMap.h"
 
 #include <blkid/blkid.h>
@@ -434,8 +435,7 @@ static int do_unmap(struct udev *udev, dev_t devno, const string& id)
          * libudev does not provide the "wait until the queue is empty"
          * API or the sufficient amount of primitives to build it from.
          */
-        string err = run_cmd("udevadm", "settle", "--timeout", "10", "--quiet",
-                             NULL);
+        string err = run_cmd("udevadm", "settle", "--timeout", "10", NULL);
         if (!err.empty())
           cerr << "rbd: " << err << std::endl;
       }
@@ -582,12 +582,12 @@ int dump_images(struct krbd_ctx *ctx, Formatter *f)
   return r;
 }
 
-extern "C" int krbd_create_from_context(struct CephContext *cct,
+extern "C" int krbd_create_from_context(rados_config_t cct,
                                         struct krbd_ctx **pctx)
 {
   struct krbd_ctx *ctx = new struct krbd_ctx();
 
-  ctx->cct = cct;
+  ctx->cct = reinterpret_cast<CephContext *>(cct);
   ctx->udev = udev_new();
   if (!ctx->udev) {
     delete ctx;

@@ -18,6 +18,7 @@
 #include "Mutex.h"
 #include "Cond.h"
 #include "Thread.h"
+#include "include/unordered_map.h"
 #include "common/config_obs.h"
 #include "common/HeartbeatMap.h"
 
@@ -305,6 +306,66 @@ public:
 
   };
 
+  template<typename T>
+  class PointerWQ : public WorkQueue_ {
+  public:
+    PointerWQ(string n, time_t ti, time_t sti, ThreadPool* p)
+      : WorkQueue_(n, ti, sti), m_pool(p) {
+      m_pool->add_work_queue(this);
+    }
+    ~PointerWQ() {
+      m_pool->remove_work_queue(this);
+    }
+    void drain() {
+      m_pool->drain(this);
+    }
+    void queue(T *item) {
+      Mutex::Locker l(m_pool->_lock);
+      m_items.push_back(item);
+      m_pool->_cond.SignalOne();
+    }
+  protected:
+    virtual void _clear() {
+      assert(m_pool->_lock.is_locked());
+      m_items.clear();
+    }
+    virtual bool _empty() {
+      assert(m_pool->_lock.is_locked());
+      return m_items.empty();
+    }
+    virtual void *_void_dequeue() {
+      assert(m_pool->_lock.is_locked());
+      if (m_items.empty()) {
+        return NULL;
+      }
+
+      T *item = m_items.front();
+      m_items.pop_front();
+      return item;
+    }
+    virtual void _void_process(void *item, ThreadPool::TPHandle &handle) {
+      process(reinterpret_cast<T *>(item));
+    }
+    virtual void _void_process_finish(void *item) {
+    }
+
+    virtual void process(T *item) = 0;
+
+    T *front() {
+      assert(m_pool->_lock.is_locked());
+      if (m_items.empty()) {
+        return NULL;
+      }
+      return m_items.front();
+    }
+    void signal() {
+      Mutex::Locker pool_locker(m_pool->_lock);
+      m_pool->_cond.SignalOne();
+    }
+  private:
+    ThreadPool *m_pool;
+    std::list<T *> m_items;
+  };
 private:
   vector<WorkQueue_*> work_queues;
   int last_work_queue;
@@ -330,7 +391,7 @@ private:
 
 public:
   ThreadPool(CephContext *cct_, string nm, int n, const char *option = NULL);
-  ~ThreadPool();
+  virtual ~ThreadPool();
 
   /// return number of threads currently running
   int get_num_threads() {
@@ -340,10 +401,12 @@ public:
   
   /// assign a work queue to this thread pool
   void add_work_queue(WorkQueue_* wq) {
+    Mutex::Locker l(_lock);
     work_queues.push_back(wq);
   }
   /// remove a work queue from this thread pool
   void remove_work_queue(WorkQueue_* wq) {
+    Mutex::Locker l(_lock);
     unsigned i = 0;
     while (work_queues[i] != wq)
       i++;
@@ -431,6 +494,48 @@ public:
   void finish(int) {
     wq->queue(c);
   }
+};
+
+/// Work queue that asynchronously completes contexts (executes callbacks).
+/// @see Finisher
+class ContextWQ : public ThreadPool::PointerWQ<Context> {
+public:
+  ContextWQ(const string &name, time_t ti, ThreadPool *tp)
+    : ThreadPool::PointerWQ<Context>(name, ti, 0, tp),
+      m_lock("ContextWQ::m_lock") {
+  }
+
+  void queue(Context *ctx, int result = 0) {
+    if (result != 0) {
+      Mutex::Locker locker(m_lock);
+      m_context_results[ctx] = result;
+    }
+    ThreadPool::PointerWQ<Context>::queue(ctx);
+  }
+protected:
+  virtual void _clear() {
+    ThreadPool::PointerWQ<Context>::_clear();
+
+    Mutex::Locker locker(m_lock);
+    m_context_results.clear();
+  }
+
+  virtual void process(Context *ctx) {
+    int result = 0;
+    {
+      Mutex::Locker locker(m_lock);
+      ceph::unordered_map<Context *, int>::iterator it =
+        m_context_results.find(ctx);
+      if (it != m_context_results.end()) {
+        result = it->second;
+        m_context_results.erase(it);
+      }
+    }
+    ctx->complete(result);
+  }
+private:
+  Mutex m_lock;
+  ceph::unordered_map<Context*, int> m_context_results;
 };
 
 class ShardedThreadPool {

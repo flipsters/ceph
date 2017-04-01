@@ -35,6 +35,7 @@ public:
       delete m_safe_timer;
     }
 
+    m_finisher->wait_for_empty();
     m_finisher->stop();
     delete m_finisher;
   }
@@ -44,6 +45,7 @@ public:
     typename TaskContexts::iterator it = m_task_contexts.find(task);
     if (it != m_task_contexts.end()) {
       delete it->second.first;
+      m_safe_timer->cancel_event(it->second.second);
       m_task_contexts.erase(it);
     }
   }

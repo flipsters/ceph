@@ -1,7 +1,7 @@
 include Makefile-env.am
 
-SUBDIRS += ocf java tracing
-DIST_SUBDIRS += gmock ocf libs3 java tracing
+SUBDIRS += ocf java
+DIST_SUBDIRS += gmock ocf libs3 java
 
 
 # subdirs
@@ -35,6 +35,7 @@ include rbd_replay/Makefile.am
 include test/Makefile.am
 include tools/Makefile.am
 include Makefile-rocksdb.am
+include tracing/Makefile.am
 
 
 # shell scripts
@@ -70,7 +71,6 @@ EXTRA_DIST += \
 	$(srcdir)/ceph-osd-prestart.sh \
 	$(srcdir)/ceph_common.sh \
 	$(srcdir)/init-radosgw \
-	$(srcdir)/init-radosgw.sysv \
 	$(srcdir)/init-rbdmap \
 	$(srcdir)/ceph-clsinfo \
 	$(srcdir)/make_version \

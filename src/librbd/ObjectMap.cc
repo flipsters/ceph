@@ -33,6 +33,13 @@ std::string ObjectMap::object_map_name(const std::string &image_id,
   return oid;
 }
 
+uint8_t ObjectMap::operator[](uint64_t object_no) const
+{
+  assert(m_image_ctx.object_map_lock.is_locked());
+  assert(object_no < m_object_map.size());
+  return m_object_map[object_no];
+}
+
 bool ObjectMap::enabled() const
 {
   RWLock::RLocker l(m_image_ctx.object_map_lock);
@@ -137,8 +144,8 @@ bool ObjectMap::object_may_exist(uint64_t object_no) const
   }
   assert(object_no < m_object_map.size());
 
-  bool exists = (m_object_map[object_no] == OBJECT_EXISTS ||
-		 m_object_map[object_no] == OBJECT_PENDING);
+  uint8_t state = (*this)[object_no];
+  bool exists = (state == OBJECT_EXISTS || state == OBJECT_PENDING);
   ldout(m_image_ctx.cct, 20) << &m_image_ctx << " object_may_exist: "
 			     << "object_no=" << object_no << " r=" << exists
 			     << dendl;
@@ -169,7 +176,7 @@ void ObjectMap::refresh(uint64_t snap_id)
   if (r < 0) {
     lderr(cct) << "error refreshing object map: " << cpp_strerror(r)
                << dendl;
-    invalidate();
+    invalidate(false);
     m_object_map.clear();
     return;
   }
@@ -182,7 +189,7 @@ void ObjectMap::refresh(uint64_t snap_id)
   if (m_object_map.size() < num_objs) {
     lderr(cct) << "object map smaller than current object count: "
                << m_object_map.size() << " != " << num_objs << dendl;
-    invalidate();
+    invalidate(false);
   } else if (m_object_map.size() > num_objs) {
     // resize op might have been interrupted
     ldout(cct, 1) << "object map larger than current object count: "
@@ -220,7 +227,7 @@ void ObjectMap::rollback(uint64_t snap_id) {
   if (r < 0) {
     lderr(cct) << "unable to load snapshot object map '" << snap_oid << "': "
 	       << cpp_strerror(r) << dendl;
-    invalidate();
+    invalidate(false);
     return;
   }
 
@@ -232,7 +239,7 @@ void ObjectMap::rollback(uint64_t snap_id) {
   if (r < 0) {
     lderr(cct) << "unable to rollback object map: " << cpp_strerror(r)
 	       << dendl;
-    invalidate();
+    invalidate(true);
   }
 }
 
@@ -258,7 +265,8 @@ void ObjectMap::snapshot(uint64_t snap_id) {
   if (r < 0) {
     lderr(cct) << "unable to load object map: " << cpp_strerror(r)
 	       << dendl;
-    invalidate();
+    invalidate(false);
+    return;
   }
 
   std::string snap_oid(object_map_name(m_image_ctx.id, snap_id));
@@ -266,7 +274,7 @@ void ObjectMap::snapshot(uint64_t snap_id) {
   if (r < 0) {
     lderr(cct) << "unable to snapshot object map '" << snap_oid << "': "
 	       << cpp_strerror(r) << dendl;
-    invalidate();
+    invalidate(false);
   }
 }
 
@@ -274,6 +282,7 @@ void ObjectMap::aio_resize(uint64_t new_size, uint8_t default_object_state,
 			   Context *on_finish) {
   assert(m_image_ctx.test_features(RBD_FEATURE_OBJECT_MAP));
   assert(m_image_ctx.owner_lock.is_locked());
+  assert(m_image_ctx.image_watcher != NULL);
   assert(m_image_ctx.image_watcher->is_lock_owner());
 
   ResizeRequest *req = new ResizeRequest(
@@ -294,11 +303,12 @@ bool ObjectMap::aio_update(uint64_t start_object_no, uint64_t end_object_no,
                            const boost::optional<uint8_t> &current_state,
                            Context *on_finish)
 {
-  assert(m_image_ctx.test_features(RBD_FEATURE_OBJECT_MAP));
+  assert(m_image_ctx.snap_lock.is_locked());
+  assert((m_image_ctx.features & RBD_FEATURE_OBJECT_MAP) != 0);
   assert(m_image_ctx.owner_lock.is_locked());
+  assert(m_image_ctx.image_watcher != NULL);
   assert(m_image_ctx.image_watcher->is_lock_owner());
-
-  RWLock::WLocker l(m_image_ctx.object_map_lock);
+  assert(m_image_ctx.object_map_lock.is_wlocked());
   assert(start_object_no < end_object_no);
   
   CephContext *cct = m_image_ctx.cct;
@@ -324,7 +334,7 @@ bool ObjectMap::aio_update(uint64_t start_object_no, uint64_t end_object_no,
   return false;
 }
 
-void ObjectMap::invalidate() {
+void ObjectMap::invalidate(bool force) {
   assert(m_image_ctx.snap_lock.is_wlocked());
   assert(m_image_ctx.object_map_lock.is_wlocked());
   uint64_t flags;
@@ -338,13 +348,26 @@ void ObjectMap::invalidate() {
   m_image_ctx.update_flags(m_image_ctx.snap_id, RBD_FLAG_OBJECT_MAP_INVALID,
                            true);
 
+  // do not update on-disk flags if not image owner
+  if (m_image_ctx.image_watcher == NULL ||
+      (m_image_ctx.image_watcher->is_lock_supported(m_image_ctx.snap_lock) &&
+       !m_image_ctx.image_watcher->is_lock_owner())) {
+    return;
+  }
+
   librados::ObjectWriteOperation op;
+  if (m_image_ctx.snap_id == CEPH_NOSNAP && !force) {
+    m_image_ctx.image_watcher->assert_header_locked(&op);
+  }
   cls_client::set_flags(&op, m_image_ctx.snap_id, m_image_ctx.flags,
                         RBD_FLAG_OBJECT_MAP_INVALID);
 
   int r = m_image_ctx.md_ctx.operate(m_image_ctx.header_oid, &op);
-  if (r < 0) {
-    lderr(cct) << "failed to invalidate object map: " << cpp_strerror(r)
+  if (r == -EBUSY) {
+    ldout(cct, 5) << "skipping on-disk object map invalidation: "
+                  << "image not locked by client" << dendl;
+  } else if (r < 0) {
+    lderr(cct) << "failed to invalidate on-disk object map: " << cpp_strerror(r)
 	       << dendl;
   }
 }
@@ -358,7 +381,7 @@ bool ObjectMap::Request::should_complete(int r) {
   case STATE_REQUEST:
     if (r == -EBUSY) {
       lderr(cct) << "object map lock not owned by client" << dendl;
-      return true;
+      return invalidate();
     } else if (r < 0) {
       lderr(cct) << "failed to update object map: " << cpp_strerror(r)
 		 << dendl;

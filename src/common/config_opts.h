@@ -23,6 +23,7 @@ OPTION(num_client, OPT_INT, 1)
 OPTION(monmap, OPT_STR, "")
 OPTION(mon_host, OPT_STR, "")
 OPTION(lockdep, OPT_BOOL, false)
+OPTION(lockdep_force_backtrace, OPT_BOOL, false) // always gather current backtrace at every lock
 OPTION(run_dir, OPT_STR, "/var/run/ceph")       // the "/var/run/ceph" dir, created on daemon startup
 OPTION(admin_socket, OPT_STR, "$run_dir/$cluster-$name.asok") // default changed by common_preinit()
 
@@ -175,6 +176,8 @@ OPTION(mon_sync_fs_threshold, OPT_INT, 5)   // sync() when writing this many obj
 OPTION(mon_compact_on_start, OPT_BOOL, false)  // compact leveldb on ceph-mon start
 OPTION(mon_compact_on_bootstrap, OPT_BOOL, false)  // trigger leveldb compaction on bootstrap
 OPTION(mon_compact_on_trim, OPT_BOOL, true)       // compact (a prefix) when we trim old states
+OPTION(mon_osd_cache_size, OPT_INT, 10)  // the size of osdmaps cache, not to rely on underlying store's cache
+
 OPTION(mon_tick_interval, OPT_INT, 5)
 OPTION(mon_subscribe_interval, OPT_DOUBLE, 300)
 OPTION(mon_delta_reset_interval, OPT_DOUBLE, 10)   // seconds of inactivity before we reset the pg delta to 0
@@ -263,6 +266,10 @@ OPTION(mon_sync_provider_kill_at, OPT_INT, 0)  // kill the sync provider at a sp
 OPTION(mon_sync_requester_kill_at, OPT_INT, 0) // kill the sync requester at a specific point in the work flow
 OPTION(mon_force_quorum_join, OPT_BOOL, false) // force monitor to join quorum even if it has been previously removed from the map
 OPTION(mon_keyvaluedb, OPT_STR, "leveldb")   // type of keyvaluedb backend
+
+// UNSAFE -- TESTING ONLY! Allows addition of a cache tier with preexisting snaps
+OPTION(mon_debug_unsafe_allow_tier_with_nonempty_snaps, OPT_BOOL, false)
+
 OPTION(paxos_stash_full_interval, OPT_INT, 25)   // how often (in commits) to stash a full copy of the PaxosService state
 OPTION(paxos_max_join_drift, OPT_INT, 10) // max paxos iterations before we must first sync the monitor stores
 OPTION(paxos_propose_interval, OPT_DOUBLE, 1.0)  // gather updates for this long before proposing a map update
@@ -564,16 +571,22 @@ OPTION(osd_recover_clone_overlap_limit, OPT_INT, 10)
 OPTION(osd_backfill_scan_min, OPT_INT, 64)
 OPTION(osd_backfill_scan_max, OPT_INT, 512)
 OPTION(osd_op_thread_timeout, OPT_INT, 15)
+OPTION(osd_op_thread_suicide_timeout, OPT_INT, 150)
 OPTION(osd_recovery_thread_timeout, OPT_INT, 30)
+OPTION(osd_recovery_thread_suicide_timeout, OPT_INT, 300)
 OPTION(osd_snap_trim_thread_timeout, OPT_INT, 60*60*1)
+OPTION(osd_snap_trim_thread_suicide_timeout, OPT_INT, 60*60*10)
 OPTION(osd_snap_trim_sleep, OPT_FLOAT, 0)
 OPTION(osd_scrub_thread_timeout, OPT_INT, 60)
+OPTION(osd_scrub_thread_suicide_timeout, OPT_INT, 300)
 OPTION(osd_scrub_finalize_thread_timeout, OPT_INT, 60*10)
 OPTION(osd_scrub_invalid_stats, OPT_BOOL, true)
 OPTION(osd_remove_thread_timeout, OPT_INT, 60*60)
+OPTION(osd_remove_thread_suicide_timeout, OPT_INT, 10*60*60)
 OPTION(osd_command_thread_timeout, OPT_INT, 10*60)
 OPTION(osd_age, OPT_FLOAT, .8)
 OPTION(osd_age_time, OPT_INT, 0)
+OPTION(osd_command_thread_suicide_timeout, OPT_INT, 15*60)
 OPTION(osd_heartbeat_addr, OPT_ADDR, entity_addr_t())
 OPTION(osd_heartbeat_interval, OPT_INT, 6)       // (seconds) how often we ping peers
 OPTION(osd_heartbeat_grace, OPT_INT, 20)         // (seconds) how long before we decide a peer has failed
@@ -610,6 +623,7 @@ OPTION(osd_scrub_end_hour, OPT_INT, 24)
 OPTION(osd_scrub_load_threshold, OPT_FLOAT, 0.5)
 OPTION(osd_scrub_min_interval, OPT_FLOAT, 60*60*24)    // if load is low
 OPTION(osd_scrub_max_interval, OPT_FLOAT, 7*60*60*24)  // regardless of load
+OPTION(osd_scrub_interval_randomize_ratio, OPT_FLOAT, 0.5) // randomize the scheduled scrub in the span of [min,min*(1+randomize_radio))
 OPTION(osd_scrub_chunk_min, OPT_INT, 5)
 OPTION(osd_scrub_chunk_max, OPT_INT, 25)
 OPTION(osd_scrub_sleep, OPT_FLOAT, 0)   // sleep between [deep]scrub ops
@@ -658,6 +672,7 @@ OPTION(osd_failsafe_full_ratio, OPT_FLOAT, .97) // what % full makes an OSD "ful
 OPTION(osd_failsafe_nearfull_ratio, OPT_FLOAT, .90) // what % full makes an OSD near full (failsafe)
 
 OPTION(osd_pg_object_context_cache_count, OPT_INT, 64)
+OPTION(osd_tracing, OPT_BOOL, false) // true if LTTng-UST tracepoints should be enabled
 
 // determines whether PGLog::check() compares written out log to stored log
 OPTION(osd_debug_pg_log_writeout, OPT_BOOL, false)
@@ -729,6 +744,7 @@ OPTION(osd_max_attr_name_len, OPT_U32, 100)    // max rados attr name len; canno
 OPTION(osd_max_attr_size, OPT_U64, 0)
 
 OPTION(osd_objectstore, OPT_STR, "filestore")  // ObjectStore backend type
+OPTION(osd_objectstore_tracing, OPT_BOOL, false) // true if LTTng-UST tracepoints should be enabled
 // Override maintaining compatibility with older OSDs
 // Set to true for testing.  Users should NOT set this.
 OPTION(osd_debug_override_acting_compat, OPT_BOOL, false)
@@ -801,7 +817,10 @@ OPTION(filestore_fadvise, OPT_BOOL, true)
 // data corruption in xfs prior to kernel 3.5.  filestore will
 // implicity disable this if it cannot confirm the kernel is newer
 // than that.
-OPTION(filestore_xfs_extsize, OPT_BOOL, true)
+// NOTE: This option involves a tradeoff: When disabled, fragmentation is
+// worse, but large sequential writes are faster. When enabled, large
+// sequential writes are slower, but fragmentation is reduced.
+OPTION(filestore_xfs_extsize, OPT_BOOL, false)
 
 OPTION(filestore_journal_parallel, OPT_BOOL, false)
 OPTION(filestore_journal_writeahead, OPT_BOOL, false)
@@ -857,7 +876,11 @@ OPTION(journal_discard, OPT_BOOL, false) //using ssd disk as journal, whether su
 
 OPTION(rados_mon_op_timeout, OPT_DOUBLE, 0) // how many seconds to wait for a response from the monitor before returning an error from a rados operation. 0 means on limit.
 OPTION(rados_osd_op_timeout, OPT_DOUBLE, 0) // how many seconds to wait for a response from osds before returning an error from a rados operation. 0 means no limit.
+OPTION(rados_tracing, OPT_BOOL, false) // true if LTTng-UST tracepoints should be enabled
 
+OPTION(rbd_op_threads, OPT_INT, 1)
+OPTION(rbd_op_thread_timeout, OPT_INT, 60)
+OPTION(rbd_non_blocking_aio, OPT_BOOL, true) // process AIO ops from a worker thread to prevent blocking
 OPTION(rbd_cache, OPT_BOOL, true) // whether to enable caching (writeback unless rbd_cache_max_dirty is 0)
 OPTION(rbd_cache_writethrough_until_flush, OPT_BOOL, true) // whether to make writeback caching writethrough until flush is called, to be sure the user of librbd will send flushs so that writeback is safe
 OPTION(rbd_cache_size, OPT_LONGLONG, 32<<20)         // cache size in bytes
@@ -878,6 +901,8 @@ OPTION(rbd_clone_copy_on_read, OPT_BOOL, false)
 OPTION(rbd_blacklist_on_break_lock, OPT_BOOL, true) // whether to blacklist clients whose lock was broken
 OPTION(rbd_blacklist_expire_seconds, OPT_INT, 0) // number of seconds to blacklist - set to 0 for OSD default
 OPTION(rbd_request_timed_out_seconds, OPT_INT, 30) // number of seconds before maint request times out
+OPTION(rbd_tracing, OPT_BOOL, false) // true if LTTng-UST tracepoints should be enabled
+OPTION(rbd_validate_pool, OPT_BOOL, true) // true if empty pools should be validated for RBD compatibility
 
 /*
  * The following options change the behavior for librbd's image creation methods that
@@ -907,6 +932,7 @@ OPTION(nss_db_path, OPT_STR, "") // path to nss db
 
 
 OPTION(rgw_max_chunk_size, OPT_INT, 512 * 1024)
+OPTION(rgw_max_put_size, OPT_U64, 5ULL*1024*1024*1024)
 
 /**
  * override max bucket index shards in zone configuration (if not zero)
@@ -938,6 +964,7 @@ OPTION(rgw_socket_path, OPT_STR, "")   // path to unix domain socket, if not spe
 OPTION(rgw_host, OPT_STR, "")  // host for radosgw, can be an IP, default is 0.0.0.0
 OPTION(rgw_port, OPT_STR, "")  // port to listen, format as "8080" "5000", if not specified, rgw will not run external fcgi
 OPTION(rgw_dns_name, OPT_STR, "")
+OPTION(rgw_content_length_compat, OPT_BOOL, false) // Check both HTTP_CONTENT_LENGTH and CONTENT_LENGTH in fcgi env
 OPTION(rgw_script_uri, OPT_STR, "") // alternative value for SCRIPT_URI if not set in request
 OPTION(rgw_request_uri, OPT_STR,  "") // alternative value for REQUEST_URI if not set in request
 OPTION(rgw_swift_url, OPT_STR, "")             // the swift url, being published by the internal swift auth
@@ -945,6 +972,7 @@ OPTION(rgw_swift_url_prefix, OPT_STR, "swift") // entry point for which a url is
 OPTION(rgw_swift_auth_url, OPT_STR, "")        // default URL to go and verify tokens for v1 auth (if not using internal swift auth)
 OPTION(rgw_swift_auth_entry, OPT_STR, "auth")  // entry point for which a url is considered a swift auth url
 OPTION(rgw_swift_tenant_name, OPT_STR, "")  // tenant name to use for swift access
+OPTION(rgw_swift_enforce_content_length, OPT_BOOL, false)  // enforce generation of Content-Length even in cost of performance or scalability
 OPTION(rgw_keystone_url, OPT_STR, "")  // url for keystone server
 OPTION(rgw_keystone_admin_token, OPT_STR, "")  // keystone admin token (shared secret)
 OPTION(rgw_keystone_admin_user, OPT_STR, "")  // keystone admin user name
@@ -1030,6 +1058,7 @@ OPTION(rgw_user_quota_sync_wait_time, OPT_INT, 3600 * 24) // min time between tw
 OPTION(rgw_multipart_min_part_size, OPT_INT, 5 * 1024 * 1024) // min size for each part (except for last one) in multipart upload
 
 OPTION(rgw_olh_pending_timeout_sec, OPT_INT, 3600) // time until we retire a pending olh change
+OPTION(rgw_user_max_buckets, OPT_U32, 1000) // global option to set max buckets count for all user
 
 OPTION(rgw_latency_bucket_duration_start, OPT_INT, 0) // starting point of percentile
 OPTION(rgw_latency_bucket_duration_count, OPT_INT, 500) // no. of percentile buckets
