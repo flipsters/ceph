@@ -1,3 +1,11 @@
+ceph (0.94.2-1~bpo70+1.fk8) stable; urgency=low
+
+  * Flipkart release
+    - RGW rate limits for object delete, bucket create & delete
+    - Default rate limits of not defined in config file
+
+ -- FK D42 team <d42-maintainers@flipkart.com>  Thu, 30 Mar 2017 01:15:35 +0530
+
 ceph (0.94.2-1~bpo70+1.fk7) stable; urgency=low
 
   * Flipkart upstream release
