@@ -1427,10 +1427,20 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       goto out;
     }
 
+    int boundary = 0; // put some meaningful value here, also declare the variable properly
+    for (map <string, pool_stat_t>::iterator i = stats.begin();
+	    i != stats.end(); 
+	    i++) {
+	std::string poolName = i->first;
+	int lengthPoolName = poolName.size();
+	boundary = max(boundary, lengthPoolName);
+    }
+
     if (!formatter) {
-      printf("%-15s "
+      printf("%-*s "
 	     "%12s %12s %12s %12s "
 	     "%12s %12s %12s %12s %12s\n",
+	     boundary,
 	     "pool name",
 	     "KB", "objects", "clones", "degraded",
 	     "unfound", "rd", "rd KB", "wr", "wr KB");
@@ -1444,9 +1454,10 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       const char *pool_name = i->first.c_str();
       pool_stat_t& s = i->second;
       if (!formatter) {
-	printf("%-15s "
+	printf("%-*s "
 	       "%12lld %12lld %12lld %12lld"
 	       "%12lld %12lld %12lld %12lld %12lld\n",
+	       boundary,
 	       pool_name,
 	       (long long)s.num_kb,
 	       (long long)s.num_objects,
