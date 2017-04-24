@@ -57,7 +57,7 @@ int rados_tool_sync(const std::map < std::string, std::string > &opts,
  * the helper constant values used are
  * defined below.
  */
-#define BUFFER_SIZE 1000
+#define BUFFER_SIZE 500
 #define BILLION 1000000000
 #define MILLION 1000000
 #define KILO 1000
@@ -1155,7 +1155,7 @@ char* convert_count(char *buf, long long count)
     if (quotient < 1.0) {
       i++; continue;
     } else {
-      snprintf(buf, BUFFER_SIZE, "%0.1lf%s", quotient, suffixes[i]);
+      snprintf(buf, BUFFER_SIZE, "%0.2lf%s", quotient, suffixes[i]);
       written = 1; break;
     }
   }
@@ -1178,7 +1178,7 @@ char * convert_size(char *buf, long long size)
     if (quotient < 1.0) {
       i++; continue;
     } else {
-      snprintf(buf, BUFFER_SIZE, "%0.1lf%s", quotient, suffixes[i]);
+      snprintf(buf, BUFFER_SIZE, "%0.2lf%s", quotient, suffixes[i]);
       written = 1; break;
     }
   }
@@ -1556,10 +1556,14 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       goto out;
     }
     if (!formatter) {
-      printf("  total used    %12lld %12lld\n", (long long unsigned)tstats.kb_used,
-	     (long long unsigned)tstats.num_objects);
-      printf("  total avail   %12lld\n", (long long unsigned)tstats.kb_avail);
-      printf("  total space   %12lld\n", (long long unsigned)tstats.kb);
+      char buf_kb_used_total[BUFFER_SIZE],
+	   buf_num_objects_total[BUFFER_SIZE],
+	   buf_kb_avail_total[BUFFER_SIZE],
+	   buf_kb_total[BUFFER_SIZE];
+      printf("  total used    %12s %12s\n", convert_size(buf_kb_used_total,tstats.kb_used),
+	     convert_count(buf_num_objects_total,tstats.num_objects));
+      printf("  total avail   %12s\n", convert_size(buf_kb_avail_total,tstats.kb_avail));
+      printf("  total space   %12s\n", convert_size(buf_kb_total,tstats.kb));
     } else {
       formatter->close_section();
       formatter->dump_format("total_objects", "%lld", (long long unsigned)tstats.num_objects);
