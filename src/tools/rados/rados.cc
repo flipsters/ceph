@@ -1487,7 +1487,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       goto out;
     } 
     if (!formatter) {
-      printf("%-12s "
+      printf("%-15s "
 	     "%12s %12s %12s %12s "
 	     "%12s %12s %12s %12s %12s\n",
 	     "pool name",
@@ -1513,7 +1513,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 	     buf_num_wr[BUFFER_SIZE],
 	     buf_num_wr_kb[BUFFER_SIZE];
 
-	printf("%-12s "
+	printf("%-15s "
 	       "%12s %12s %12s %12s"
 	       "%12s %12s %12s %12s %12s\n",
 	       pool_name,
