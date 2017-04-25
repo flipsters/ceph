@@ -52,6 +52,20 @@ int rados_tool_sync(const std::map < std::string, std::string > &opts,
 #define STR(x) _STR(x)
 #define _STR(x) #x
 
+/* rados df command's output metric values 
+ * are being printed with mixed units,
+ * the helper constant values used are
+ * defined below.
+ */
+#define BUFFER_SIZE 500
+#define BILLION (1000 * MILLION)
+#define MILLION (1000 * THOUSAND)
+#define THOUSAND 1000
+#define BYTES 1 
+#define KB (BYTES * 1024)
+#define MB (KB * 1024)
+#define GB (MB * 1024)
+
 void usage(ostream& out)
 {
   out <<					\
@@ -1128,6 +1142,52 @@ static int do_cache_flush_evict_all(IoCtx& io_ctx, bool blocking)
   return errors ? -1 : 0;
 }
 
+char* convert_count(char *buf, long long unsigned count)
+{
+  const char *suffixes[] = {"B", "M", "K"};
+  long long metrics[] = {BILLION, MILLION, THOUSAND};  
+  
+  int i = 0, written = 0;
+  const int SUFF_SIZE = (sizeof(suffixes) / sizeof(suffixes[0]));
+  
+  while(i < SUFF_SIZE) {
+    double quotient = count / metrics[i];
+    if (quotient < 1.0) {
+      i++; continue;
+    } else {
+      snprintf(buf, BUFFER_SIZE, "%0.2lf%s", quotient, suffixes[i]);
+      written = 1; break;
+    }
+  }
+  if (written == 0) {
+    snprintf(buf, BUFFER_SIZE, "%llu", count);
+  }
+  return buf;
+}
+
+char * convert_size(char *buf, long long unsigned size)
+{
+  const char* suffixes[] = {"GB", "MB", "KB", "B"};
+  long long metrics[] = {GB, MB, KB, BYTES};
+  
+  int i = 0, written = 0;
+  const int SUFF_SIZE = (sizeof(suffixes) / sizeof(suffixes[0]));
+
+  while (i < SUFF_SIZE) {
+    double quotient = size / metrics[i];
+    if (quotient < 1.0) {
+      i++; continue;
+    } else {
+      snprintf(buf, BUFFER_SIZE, "%0.2lf%s", quotient, suffixes[i]);
+      written = 1; break;
+    }
+  }
+  if (written == 0) {
+    snprintf(buf, BUFFER_SIZE, "%llu%s", size, "B");
+  }
+  return buf;
+}
+
 /**********************************************
 
 **********************************************/
@@ -1425,15 +1485,14 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     if (ret < 0) {
       cerr << "error fetching pool stats: " << cpp_strerror(ret) << std::endl;
       goto out;
-    }
-
+    } 
     if (!formatter) {
       printf("%-15s "
 	     "%12s %12s %12s %12s "
 	     "%12s %12s %12s %12s %12s\n",
 	     "pool name",
-	     "KB", "objects", "clones", "degraded",
-	     "unfound", "rd", "rd KB", "wr", "wr KB");
+	     "SIZE", "objects", "clones", "degraded",
+	     "unfound", "rd", "rd SIZE", "wr", "wr SIZE");
     } else {
       formatter->open_object_section("stats");
       formatter->open_array_section("pools");
@@ -1444,17 +1503,27 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       const char *pool_name = i->first.c_str();
       pool_stat_t& s = i->second;
       if (!formatter) {
+	char buf_num_kb[BUFFER_SIZE], 
+	     buf_num_objects[BUFFER_SIZE],
+	     buf_num_objects_clones[BUFFER_SIZE],
+	     buf_num_objects_degraded[BUFFER_SIZE],
+	     buf_num_objects_unfound[BUFFER_SIZE],
+	     buf_num_rd[BUFFER_SIZE],
+	     buf_num_rd_kb[BUFFER_SIZE],
+	     buf_num_wr[BUFFER_SIZE],
+	     buf_num_wr_kb[BUFFER_SIZE];
+
 	printf("%-15s "
-	       "%12lld %12lld %12lld %12lld"
-	       "%12lld %12lld %12lld %12lld %12lld\n",
+	       "%12s %12s %12s %12s"
+	       "%12s %12s %12s %12s %12s\n",
 	       pool_name,
-	       (long long)s.num_kb,
-	       (long long)s.num_objects,
-	       (long long)s.num_object_clones,
-	       (long long)s.num_objects_degraded,
-	       (long long)s.num_objects_unfound,
-	       (long long)s.num_rd, (long long)s.num_rd_kb,
-	         (long long)s.num_wr, (long long)s.num_wr_kb);
+	       convert_size(buf_num_kb,s.num_kb),
+	       convert_count(buf_num_objects,s.num_objects),
+	       convert_count(buf_num_objects_clones,s.num_object_clones),
+	       convert_count(buf_num_objects_degraded,s.num_objects_degraded),
+	       convert_count(buf_num_objects_unfound,s.num_objects_unfound),
+	       convert_count(buf_num_rd,s.num_rd), convert_size(buf_num_rd_kb,s.num_rd_kb),
+	       convert_count(buf_num_wr,s.num_wr), convert_size(buf_num_wr_kb,s.num_wr_kb));
       } else {
         formatter->open_object_section("pool");
         int64_t pool_id = rados.pool_lookup(pool_name);
@@ -1487,10 +1556,14 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       goto out;
     }
     if (!formatter) {
-      printf("  total used    %12lld %12lld\n", (long long unsigned)tstats.kb_used,
-	     (long long unsigned)tstats.num_objects);
-      printf("  total avail   %12lld\n", (long long unsigned)tstats.kb_avail);
-      printf("  total space   %12lld\n", (long long unsigned)tstats.kb);
+      char buf_kb_used_total[BUFFER_SIZE],
+	   buf_num_objects_total[BUFFER_SIZE],
+	   buf_kb_avail_total[BUFFER_SIZE],
+	   buf_kb_total[BUFFER_SIZE];
+      printf("  total used    %12s %12s\n", convert_size(buf_kb_used_total,tstats.kb_used),
+	     convert_count(buf_num_objects_total,tstats.num_objects));
+      printf("  total avail   %12s\n", convert_size(buf_kb_avail_total,tstats.kb_avail));
+      printf("  total space   %12s\n", convert_size(buf_kb_total,tstats.kb));
     } else {
       formatter->close_section();
       formatter->dump_format("total_objects", "%lld", (long long unsigned)tstats.num_objects);
