@@ -61,8 +61,8 @@ int rados_tool_sync(const std::map < std::string, std::string > &opts,
 #define BILLION (1000 * MILLION)
 #define MILLION (1000 * THOUSAND)
 #define THOUSAND 1000
-#define BY 1 
-#define KB (BY * 1024)
+#define BYTES 1 
+#define KB (BYTES * 1024)
 #define MB (KB * 1024)
 #define GB (MB * 1024)
 
@@ -1168,7 +1168,7 @@ char* convert_count(char *buf, long long unsigned count)
 char * convert_size(char *buf, long long unsigned size)
 {
   const char* suffixes[] = {"GB", "MB", "KB", "B"};
-  long long metrics[] = {GB, MB, KB, BY};
+  long long metrics[] = {GB, MB, KB, BYTES};
   
   int i = 0, written = 0;
   const int SUFF_SIZE = (sizeof(suffixes) / sizeof(suffixes[0]));
