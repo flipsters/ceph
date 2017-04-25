@@ -52,19 +52,19 @@ int rados_tool_sync(const std::map < std::string, std::string > &opts,
 #define STR(x) _STR(x)
 #define _STR(x) #x
 
-/* rados df -h command's metric values 
+/* rados df command's output metric values 
  * are being printed with mixed units,
  * the helper constant values used are
  * defined below.
  */
 #define BUFFER_SIZE 500
-#define BILLION 1000000000
-#define MILLION 1000000
-#define KILO 1000
+#define BILLION (1000 * MILLION)
+#define MILLION (1000 * THOUSAND)
+#define THOUSAND 1000
 #define BY 1 
-#define KB BY * 1024
-#define MB KB * 1024
-#define GB MB * 1024
+#define KB (BY * 1024)
+#define MB (KB * 1024)
+#define GB (MB * 1024)
 
 void usage(ostream& out)
 {
@@ -1142,10 +1142,10 @@ static int do_cache_flush_evict_all(IoCtx& io_ctx, bool blocking)
   return errors ? -1 : 0;
 }
 
-char* convert_count(char *buf, long long count)
+char* convert_count(char *buf, long long unsigned count)
 {
   const char *suffixes[] = {"B", "M", "K"};
-  long long metrics[] = {BILLION, MILLION, KILO};  
+  long long metrics[] = {BILLION, MILLION, THOUSAND};  
   
   int i = 0, written = 0;
   const int SUFF_SIZE = (sizeof(suffixes) / sizeof(suffixes[0]));
@@ -1160,14 +1160,14 @@ char* convert_count(char *buf, long long count)
     }
   }
   if (written == 0) {
-    snprintf(buf, BUFFER_SIZE, "%lld", count);
+    snprintf(buf, BUFFER_SIZE, "%llu", count);
   }
   return buf;
 }
 
-char * convert_size(char *buf, long long size)
+char * convert_size(char *buf, long long unsigned size)
 {
-  const char* suffixes[] = {"Gb", "Mb", "Kb", "b"};
+  const char* suffixes[] = {"GB", "MB", "KB", "B"};
   long long metrics[] = {GB, MB, KB, BY};
   
   int i = 0, written = 0;
@@ -1183,7 +1183,7 @@ char * convert_size(char *buf, long long size)
     }
   }
   if (written == 0) {
-    snprintf(buf, BUFFER_SIZE, "%lld%s", size, "b");
+    snprintf(buf, BUFFER_SIZE, "%llu%s", size, "B");
   }
   return buf;
 }
