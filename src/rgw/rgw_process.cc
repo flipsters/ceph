@@ -203,5 +203,23 @@ done:
 	  << " ======"
 	  << dendl;
 
+  switch(http_ret/100) {
+    case 1:
+      perfcounter->inc(l_rgw_http_status_1xx);
+      break;
+    case 2:
+      perfcounter->inc(l_rgw_http_status_2xx);
+      break;
+    case 3:
+      perfcounter->inc(l_rgw_http_status_3xx);
+      break;
+    case 4:
+      perfcounter->inc(l_rgw_http_status_4xx);
+      break;
+    case 5:
+      perfcounter->inc(l_rgw_http_status_5xx);
+      break;
+  }
+
   return (ret < 0 ? ret : s->err.ret);
 } /* process_request */
