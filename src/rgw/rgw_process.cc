@@ -110,10 +110,10 @@ int process_request(RGWRados* store, RGWREST* rest, RGWRequest* req,
     goto done;
   }
 
-  if ( s->user.user_id != RGW_USER_ANON_ID ) {
-    if ( rgw_rate_limit_ok(s->user.user_id, op) == false ) {
-      dout(20) << "user: " << s->user.user_id << "exceeded API limit" << dendl;
-      abort_early(s, op, -ERR_SLOW_DOWN);
+  if ( s->user->user_id.id != RGW_USER_ANON_ID ) {
+    if ( rgw_rate_limit_ok(s->user->user_id.id, op) == false ) {
+      dout(20) << "user: " << s->user->user_id.id << "exceeded API limit" << dendl;
+      abort_early(s, op, -ERR_SLOW_DOWN, handler);
       goto done;
     }
   }

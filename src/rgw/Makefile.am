@@ -87,6 +87,7 @@ librgw_la_SOURCES = \
 	rgw/librgw.cc \
 	rgw/rgw_xml.cc \
 	rgw/rgw_xml_enc.cc \
+	rgw/rgw_rate_limit.cc \
 	rgw/rgw_website.cc
 
 if WITH_OPENLDAP
@@ -112,6 +113,7 @@ LIBRGW_DEPS += \
 	-lexpat \
 	-lm \
 	-lfcgi \
+	-lyaml-cpp \
 	-ldl
 
 if WITH_OPENLDAP
