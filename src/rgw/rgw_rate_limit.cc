@@ -566,7 +566,7 @@ int rgw_rate_limit_init(CephContext *cct)
   rgw_init_api_ctrs(cct);
 
   FileWatchThread *fwthd = new FileWatchThread();
-  fwthd->create("Rate-Limiter-File-watcher");
+  fwthd->create("Rate-Limiter");
 
   setup_timers();
 
