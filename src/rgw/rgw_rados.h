@@ -3083,6 +3083,7 @@ public:
                ceph::buffer::list *petag);
   
   int check_bucket_empty(RGWBucketInfo& bucket_info);
+  int delete_orphan(RGWBucketInfo& bucket_info);
 
   /**
    * Delete a bucket.

@@ -2680,6 +2680,35 @@ void RGWDeleteBucket::execute()
       return;
     }
   }
+ 
+  struct RGWListBucketMultiparts_Orphan : RGWListBucketMultiparts_ObjStore_S3 {
+
+  public:
+    RGWListBucketMultiparts_Orphan(RGWDeleteBucket *p) {
+      RGWListBucketMultiparts::init(p->store,p->s,p->dialect_handler);
+    }
+    bool orphan_exist() {
+      verify_permission();
+      pre_exec();
+      execute();
+      partial_uploads = uploads;
+      vector<RGWMultipartUploadEntry>::iterator iter;
+      for (iter = partial_uploads.begin(); iter != partial_uploads.end(); ++iter) {
+          return true;
+      }
+      return false;
+    }
+  private:
+      vector<RGWMultipartUploadEntry> partial_uploads;
+  };
+
+  RGWListBucketMultiparts_Orphan rmp(this);
+
+  if (rmp.orphan_exist()) {
+    ldout(s->cct, 10) << "incomplete multipart uploads found" <<dendl;
+    op_ret = -ENOTEMPTY;
+    return;
+  }
 
   op_ret = store->delete_bucket(s->bucket_info, ot, false);
 

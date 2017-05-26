@@ -7891,6 +7891,42 @@ bool RGWRados::is_syncing_bucket_meta(const rgw_bucket& bucket)
   return true;
 }
 
+int RGWRados::delete_orphan(RGWBucketInfo& bucket_info)
+{
+  std::map<string, rgw_bucket_dir_entry> ent_map;
+  rgw_obj_index_key marker;
+  string prefix;
+  bool is_truncated;
+  string ns;
+  string instance;
+  string name;
+  rgw_obj obj;
+  rgw_raw_obj raw_obj;
+
+  do {
+#define NUM_ENTRIES 1000
+    int r = cls_bucket_list(bucket_info, RGW_NO_SHARD, marker, prefix, NUM_ENTRIES, true, ent_map,
+                        &is_truncated, &marker);
+    if (r < 0)
+      return r;
+
+    std::map<string, rgw_bucket_dir_entry>::iterator eiter;
+    for (eiter = ent_map.begin(); eiter != ent_map.end(); ++eiter) {
+      name = eiter->second.key.name;
+      if (rgw_obj_key::strip_namespace_from_name(name,ns,instance)) {
+      	obj.init(bucket_info.bucket,name,instance,ns);
+        /* set data extra pool if the key name ends with "meta" */
+        if (eiter->first.rfind(MP_META_SUFFIX) == (eiter->first.length() - strlen(MP_META_SUFFIX))) {
+	  obj.set_in_extra_data(true);
+        }
+	obj_to_raw(bucket_info.placement_rule,obj,&raw_obj);
+	delete_raw_obj(raw_obj);
+      }
+    }
+  } while (is_truncated);
+  return 0;
+}
+
 int RGWRados::check_bucket_empty(RGWBucketInfo& bucket_info)
 {
   std::map<string, rgw_bucket_dir_entry> ent_map;
@@ -7936,6 +7972,10 @@ int RGWRados::delete_bucket(RGWBucketInfo& bucket_info, RGWObjVersionTracker& ob
     if (r < 0) {
       return r;
     }
+  }
+  r = delete_orphan(bucket_info);
+  if (r < 0) {
+    return r;
   }
   
   r = rgw_bucket_delete_bucket_obj(this, bucket.tenant, bucket.name, objv_tracker);
