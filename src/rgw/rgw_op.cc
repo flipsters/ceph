@@ -2681,6 +2681,35 @@ void RGWDeleteBucket::execute()
     }
   }
 
+  vector<rgw_bucket_dir_entry> objs;
+  string prefix = "", marker = "", delimiter = "";
+  map<string, bool> common_prefixes;
+  bool is_truncated;
+  static MultipartMetaFilter mp_filter;
+  int max_uploads = 1000;
+
+  if (s->prot_flags & RGW_REST_SWIFT) {
+    string path_args;
+    path_args = s->info.args.get("path");
+    if (!path_args.empty()) {
+      if (!delimiter.empty() || !prefix.empty()) {
+        op_ret = -EINVAL;
+        return;
+      }
+      prefix = path_args;
+      delimiter="/";
+    }
+  }
+
+  op_ret = list_bucket_multiparts(store, s->bucket_info, prefix, marker, delimiter,
+				  &mp_filter, max_uploads, &objs, &common_prefixes, &is_truncated);
+  if (op_ret < 0) {
+    return;
+  }
+  if (!objs.empty()) {
+    op_ret = -ENOTEMPTY;
+    return;
+  }
   op_ret = store->delete_bucket(s->bucket_info, ot, false);
 
   if (op_ret == -ECANCELED) {
