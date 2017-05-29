@@ -245,3 +245,22 @@ int abort_multipart_upload(RGWRados *store, CephContext *cct, RGWObjectCtx *obj_
   return ret == -ENOENT?-ERR_NO_SUCH_UPLOAD:ret;
 }
 
+int list_bucket_multiparts(RGWRados *store, RGWBucketInfo& bucket_info,
+				string &prefix, string &marker, string &delim,
+				RGWAccessListFilter* filter, int &max_uploads,
+				vector<rgw_bucket_dir_entry>* objs,
+				map<string, bool>* common_prefixes,bool* is_truncated)
+{
+  RGWRados::Bucket target(store, bucket_info);
+  RGWRados::Bucket::List list_op(&target);
+
+  list_op.params.prefix = prefix;
+  list_op.params.delim = delim;
+  list_op.params.marker = marker;
+  list_op.params.ns = RGW_OBJ_NS_MULTIPART;
+  list_op.params.filter = filter;
+
+  int op_ret = list_op.list_objects(max_uploads, objs, common_prefixes,
+				is_truncated);
+  return op_ret;
+}
