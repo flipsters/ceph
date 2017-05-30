@@ -193,13 +193,11 @@ void global_init(std::vector < const char * > *alt_def_args,
     if (g_conf->setuser.length()) {
       uid = atoi(g_conf->setuser.c_str());
       if (!uid) {
-	char buf[4096];
-	struct passwd pa;
-	struct passwd *p = 0;
-	getpwnam_r(g_conf->setuser.c_str(), &pa, buf, sizeof(buf), &p);
+	errno = 0;
+	struct passwd *p = getpwnam(g_conf->setuser.c_str());
 	if (!p) {
 	  cerr << "unable to look up user '" << g_conf->setuser << "'"
-	       << std::endl;
+	       << " errno: " << errno << std::endl;
 	  exit(1);
 	}
 	uid = p->pw_uid;
@@ -210,13 +208,12 @@ void global_init(std::vector < const char * > *alt_def_args,
     if (g_conf->setgroup.length() > 0) {
       gid = atoi(g_conf->setgroup.c_str());
       if (!gid) {
-	char buf[4096];
-	struct group gr;
-	struct group *g = 0;
-	getgrnam_r(g_conf->setgroup.c_str(), &gr, buf, sizeof(buf), &g);
+	errno = 0;
+	struct group *g = getgrnam(g_conf->setgroup.c_str());
+	cerr << __func__ << " getgrnam: gid: "<< g->gr_gid << " gid_string: " << g_conf->setgroup << std::endl;
 	if (!g) {
 	  cerr << "unable to look up group '" << g_conf->setgroup << "'"
-	       << std::endl;
+	       << " errno: " << errno << std::endl;
 	  exit(1);
 	}
 	gid = g->gr_gid;
