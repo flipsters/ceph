@@ -20,6 +20,8 @@
 #include "rgw_bucket.h"
 #include "rgw_user.h"
 #include "rgw_string.h"
+#include "rgw_multi.h"
+#include "rgw_op.h"
 
 #include "include/rados/librados.hpp"
 // until everything is moved from rgw_common
@@ -533,11 +535,12 @@ int rgw_remove_bucket(RGWRados *store, rgw_bucket& bucket, bool delete_children)
 
   RGWRados::Bucket target(store, info);
   RGWRados::Bucket::List list_op(&target);
+  CephContext *cct = store->ctx();
+  int max = 1000;
 
   list_op.params.list_versions = true;
 
   if (delete_children) {
-    int max = 1000;
 
     do {
       objs.clear();
@@ -555,8 +558,40 @@ int rgw_remove_bucket(RGWRados *store, rgw_bucket& bucket, bool delete_children)
       }
 
     } while (!objs.empty());
-
   }
+
+  do {
+
+    objs.clear();
+    string prefix = "", marker = "", delimiter = "";
+    static MultipartMetaFilter mp_filter;
+    bool is_truncated;
+
+    ret = list_bucket_multiparts(store, info, prefix, marker, delimiter,
+           			  &mp_filter, max, &objs, &common_prefixes, &is_truncated);
+
+    if (ret < 0) {
+      return ret;
+    }
+
+    if (!objs.empty() && delete_children) {
+      vector<rgw_bucket_dir_entry>::iterator iter;
+      RGWMultipartUploadEntry entry;
+      for (iter = objs.begin(); iter != objs.end(); ++iter) {
+        rgw_obj_key key(iter->key);
+        if (!entry.mp.from_meta(key.name))
+          continue;
+        entry.obj = *iter;
+        abort_multipart_upload(store,cct,&obj_ctx,info,entry.mp);
+        dout(1) << "WARNING : cleaned incomplete multipart" << dendl;
+      }
+    }
+    else if (!objs.empty() && !delete_children) {
+      dout(0) << "ERROR : bucket not empty" << dendl;
+      return -ENOTEMPTY;
+    }
+
+  } while (!objs.empty());
 
   ret = rgw_bucket_sync_user_stats(store, bucket.tenant, info);
   if ( ret < 0) {
@@ -625,12 +660,44 @@ int rgw_remove_bucket_bypass_gc(RGWRados *store, rgw_bucket& bucket,
 
   RGWRados::Bucket target(store, info);
   RGWRados::Bucket::List list_op(&target);
+  CephContext *cct = store->ctx();
 
   list_op.params.list_versions = true;
 
   std::list<librados::AioCompletion*> handles;
 
   int max = 1000;
+
+  do {
+
+    string prefix = "", marker = "", delimiter = "";
+    static MultipartMetaFilter mp_filter;
+    bool is_truncated;
+
+    ret = list_bucket_multiparts(store, info, prefix, marker, delimiter,
+                                &mp_filter, max, &objs, &common_prefixes, &is_truncated);
+
+    if (ret < 0) {
+      return ret;
+    }
+
+    if (!objs.empty()) {
+      vector<rgw_bucket_dir_entry>::iterator iter;
+      RGWMultipartUploadEntry entry;
+      for (iter = objs.begin(); iter != objs.end(); ++iter) {
+        rgw_obj_key key(iter->key);
+        if (!entry.mp.from_meta(key.name))
+          continue;
+        entry.obj = *iter;
+        abort_multipart_upload(store,cct,&obj_ctx,info,entry.mp);
+        dout(1) << "WARNING : cleaned incomplete multipart" << dendl;
+      }
+    }
+
+  } while (!objs.empty());
+
+  objs.clear();
+
   int max_aio = concurrent_max;
   ret = list_op.list_objects(max, &objs, &common_prefixes, NULL);
   if (ret < 0)
