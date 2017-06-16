@@ -32,6 +32,13 @@ public:
     vsnprintf(buf, sizeof(buf), format, ap);
     *_dout << buf << dendl;
   }
+
+  void myLogv(const char* format, const char *s) {
+    dout(1);
+    char buf[65536];
+    snprintf(buf, sizeof(buf), format, s);
+    *_dout << buf << dendl;
+  }
 };
 
 leveldb::Logger *create_leveldb_ceph_logger()
@@ -41,6 +48,9 @@ leveldb::Logger *create_leveldb_ceph_logger()
 
 int LevelDBStore::init(string option_str)
 {
+  char s[] = "hello from levelDB";
+  ceph_logger->myLogv("%s", s);
+  
   // init defaults.  caller can override these if they want
   // prior to calling open.
   options.write_buffer_size = g_conf->leveldb_write_buffer_size;
@@ -102,6 +112,8 @@ int LevelDBStore::do_open(ostream &out, bool create_if_missing)
 
   leveldb::DB *_db;
   leveldb::Status status = leveldb::DB::Open(ldoptions, path, &_db);
+  //string ss = "LevelDB path is " + path.data();
+  ceph_logger->myLogv("%s", path.data());
   db.reset(_db);
   if (!status.ok()) {
     out << status.ToString() << std::endl;
@@ -168,6 +180,8 @@ void LevelDBStore::close()
 
 int LevelDBStore::submit_transaction(KeyValueDB::Transaction t)
 {
+  char ss[] = "TX submitted to levelDB";
+  ceph_logger->myLogv("%s", ss);
   utime_t start = ceph_clock_now(g_ceph_context);
   LevelDBTransactionImpl * _t =
     static_cast<LevelDBTransactionImpl *>(t.get());
@@ -180,6 +194,8 @@ int LevelDBStore::submit_transaction(KeyValueDB::Transaction t)
 
 int LevelDBStore::submit_transaction_sync(KeyValueDB::Transaction t)
 {
+  char ss[] = "submit_transaction_sync";
+  ceph_logger->myLogv("%s", ss);
   utime_t start = ceph_clock_now(g_ceph_context);
   LevelDBTransactionImpl * _t =
     static_cast<LevelDBTransactionImpl *>(t.get());
@@ -197,6 +213,19 @@ void LevelDBStore::LevelDBTransactionImpl::set(
   const string &k,
   const bufferlist &to_set_bl)
 {
+  char ss[4096] = "set:";
+  char s1[4096];
+  char s2[4096];
+  strcpy(s1, prefix.data());
+  strcpy(s2, k.data());
+  strcpy(ss + strlen(ss), s1);
+  strcpy(ss + strlen(ss) + strlen(s1), s2); 
+  tlogger = new CephLevelDBLogger(g_ceph_context);
+  tlogger->myLogv("set:prefix=%s", s1);
+  tlogger->myLogv("set:key=%s", s2);
+  //tlogger->myLogv("%s", ss);
+  
+  //dout(ss);
   string key = combine_strings(prefix, k);
   size_t bllen = to_set_bl.length();
   // bufferlist::c_str() is non-constant, so we can't call c_str()
@@ -226,12 +255,25 @@ void LevelDBStore::LevelDBTransactionImpl::set(
 void LevelDBStore::LevelDBTransactionImpl::rmkey(const string &prefix,
 					         const string &k)
 {
+  char s1[4096];
+  char s2[4096];
+  strcpy(s1, prefix.data());
+  strcpy(s2, k.data());
+  tlogger = new CephLevelDBLogger(g_ceph_context);
+  tlogger->myLogv("rmkey:prefix = %s", s1);
+  tlogger->myLogv("rmkey:key=%s", s2);
+  
   string key = combine_strings(prefix, k);
   bat.Delete(leveldb::Slice(key));
 }
 
 void LevelDBStore::LevelDBTransactionImpl::rmkeys_by_prefix(const string &prefix)
 {
+  char s1[4096];
+  strcpy(s1, prefix.data());
+  tlogger = new CephLevelDBLogger(g_ceph_context);
+  tlogger->myLogv("rmkeyby:prefix = %s", s1);
+  
   KeyValueDB::Iterator it = db->get_iterator(prefix);
   for (it->seek_to_first();
        it->valid();
@@ -246,6 +288,9 @@ int LevelDBStore::get(
     const std::set<string> &keys,
     std::map<string, bufferlist> *out)
 {
+  int loop = 0;
+  string kk;
+  char s1[4096];
   utime_t start = ceph_clock_now(g_ceph_context);
   KeyValueDB::Iterator it = get_iterator(prefix);
   for (std::set<string>::const_iterator i = keys.begin();
@@ -254,12 +299,20 @@ int LevelDBStore::get(
     it->lower_bound(*i);
     if (it->valid() && it->key() == *i) {
       out->insert(make_pair(*i, it->value()));
+      kk = *i;
+      loop++;
+      sprintf(s1, "get-map:prefix=%s||key=%s||loop=%d", prefix.data(), kk.data(), loop);
+      ceph_logger->myLogv("%s", s1);
     } else if (!it->valid())
-      break;
+      loop = -1;
+    sprintf(s1, "get-map:prefix=%s||key=%s||loop=%d", prefix.data(), kk.data(), loop);
+    ceph_logger->myLogv("%s", s1);
+    break;
   }
   utime_t lat = ceph_clock_now(g_ceph_context) - start;
   logger->inc(l_leveldb_gets);
   logger->tinc(l_leveldb_get_latency, lat);
+
   return 0;
 }
 
@@ -280,6 +333,12 @@ int LevelDBStore::get(const string &prefix,
   utime_t lat = ceph_clock_now(g_ceph_context) - start;
   logger->inc(l_leveldb_gets);
   logger->tinc(l_leveldb_get_latency, lat);
+
+  char s1[4096];
+  //sprintf(s1, "get:prefix=%s||key=%s||v=%s||loop=%d", prefix.data(), it->key(), it->value(), loop);
+  sprintf(s1, "get:prefix=%s||key=%s", prefix.data(), key.data());
+  ceph_logger->myLogv("%s", s1);
+
   return r;
 }
 
@@ -301,7 +360,13 @@ bufferlist LevelDBStore::to_bufferlist(leveldb::Slice in)
 int LevelDBStore::split_key(leveldb::Slice in, string *prefix, string *key)
 {
   size_t prefix_len = 0;
-  
+
+#if 0
+  char s1[4096];
+  sprintf(s1, "split_key:prefix=%s||key=%s", prefix->data(), key->data());
+  ceph_logger->myLogv("%s", s1);
+#endif
+
   // Find separator inside Slice
   char* separator = (char*) memchr(in.data(), 0, in.size());
   if (separator == NULL)

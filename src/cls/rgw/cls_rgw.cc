@@ -2083,6 +2083,7 @@ static int rgw_obj_remove(cls_method_context_t hctx, bufferlist *in, bufferlist 
 
 static int rgw_obj_store_pg_ver(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
 {
+  CLS_LOG(1, "VISHAL:00rgw_bucket_complete_op():\n");
   // decode request
   rgw_cls_obj_store_pg_ver_op op;
   bufferlist::iterator iter = in->begin();

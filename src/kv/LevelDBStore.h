@@ -55,6 +55,7 @@ class CephLevelDBLogger;
 class LevelDBStore : public KeyValueDB {
   CephContext *cct;
   PerfCounters *logger;
+  public:
   CephLevelDBLogger *ceph_logger;
   string path;
   boost::scoped_ptr<leveldb::Cache> db_cache;
@@ -185,6 +186,7 @@ public:
   public:
     leveldb::WriteBatch bat;
     LevelDBStore *db;
+    CephLevelDBLogger *tlogger;
     explicit LevelDBTransactionImpl(LevelDBStore *db) : db(db) {}
     void set(
       const string &prefix,

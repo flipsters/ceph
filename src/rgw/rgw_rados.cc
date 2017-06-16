@@ -10950,6 +10950,7 @@ int RGWRados::omap_get_vals(rgw_obj& obj, bufferlist& header, const string& mark
     return r;
   }
 
+  ldout(cct, 1) << "omap_get_vals bucket=" << bucket << " oid=" << ref.oid << dendl;
   r = ref.ioctx.omap_get_vals(ref.oid, marker, count, &m);
   if (r < 0)
     return r;
@@ -10968,6 +10969,7 @@ int RGWRados::omap_get_all(rgw_obj& obj, bufferlist& header,
     return r;
   }
 
+  ldout(cct, 1) << "omap_get_all bucket=" << bucket << " oid=" << ref.oid << dendl;
 #define MAX_OMAP_GET_ENTRIES 1024
   const int count = MAX_OMAP_GET_ENTRIES;
   string start_after;
@@ -10995,7 +10997,7 @@ int RGWRados::omap_set(rgw_obj& obj, std::string& key, bufferlist& bl)
   if (r < 0) {
     return r;
   }
-  ldout(cct, 15) << "omap_set bucket=" << bucket << " oid=" << ref.oid << " key=" << key << dendl;
+  ldout(cct, 1) << "omap_set bucket=" << bucket << " oid=" << ref.oid << " key=" << key << dendl;
 
   map<string, bufferlist> m;
   m[key] = bl;
@@ -11013,6 +11015,7 @@ int RGWRados::omap_set(rgw_obj& obj, std::map<std::string, bufferlist>& m)
   if (r < 0) {
     return r;
   }
+  ldout(cct, 1) << "omap_set on map bucket=" << bucket << " oid=" << ref.oid << dendl;
 
   r = ref.ioctx.omap_set(ref.oid, m);
 
@@ -11031,6 +11034,7 @@ int RGWRados::omap_del(rgw_obj& obj, const std::string& key)
   set<string> k;
   k.insert(key);
 
+  ldout(cct, 1) << "omap_del bucket=" << bucket << " oid=" << ref.oid << " key=" << key << dendl;
   r = ref.ioctx.omap_rm_keys(ref.oid, k);
   return r;
 }

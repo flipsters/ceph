@@ -76,7 +76,7 @@ export DYLD_LIBRARY_PATH=$CEPH_LIB:$DYLD_LIBRARY_PATH
 [ -z "$CEPH_DIR" ] && CEPH_DIR="$PWD"
 [ -z "$CEPH_DEV_DIR" ] && CEPH_DEV_DIR="$CEPH_DIR/dev"
 [ -z "$CEPH_OUT_DIR" ] && CEPH_OUT_DIR="$CEPH_DIR/out"
-[ -z "$CEPH_RGW_PORT" ] && CEPH_RGW_PORT=8000
+[ -z "$CEPH_RGW_PORT" ] && CEPH_RGW_PORT=9000
 [ -z "$CEPH_CONF_PATH" ] && CEPH_CONF_PATH=$CEPH_DIR
 
 extra_conf=""
@@ -325,6 +325,7 @@ else
     COSDDEBUG='
         debug ms = 1
         debug osd = 25
+        debug rados = 10 
         debug objecter = 20
         debug monc = 20
         debug journal = 20
@@ -390,7 +391,8 @@ if [ -n "$ip" ]; then
 else
     echo hostname $HOSTNAME
     # filter out IPv6 and localhost addresses
-    IP="$(ifconfig | sed -En 's/127.0.0.1//;s/.*inet (addr:)?(([0-9]*\.){3}[0-9]*).*/\2/p' | head -n1)"
+    #IP="$(ifconfig | sed -En 's/127.0.0.1//;s/.*inet (addr:)?(([0-9]*\.){3}[0-9]*).*/\2/p' | head -n1)"
+    IP="$(ip address | sed -En 's/127.0.0.1//;s/.*inet (addr:)?(([0-9]*\.){3}[0-9]*).*/\2/p' | head -n1)"
     # if nothing left, try using localhost address, it might work
     if [ -z "$IP" ]; then IP="127.0.0.1"; fi
     echo ip $IP
@@ -512,6 +514,8 @@ $DAEMONOPTS
         filestore wbthrottle btrfs ios start flusher = 10
         filestore wbthrottle btrfs ios hard limit = 20
         filestore wbthrottle btrfs inodes hard limit = 30
+        filestore dump file = "/tmp/fs.dump"
+        leveldb log = "/tmp/leveldb.log"
 	bluestore fsck on mount = true
 	bluestore block create = true
 	bluestore block db size = 67108864
@@ -784,9 +788,9 @@ do_rgw()
 
     # Start server
     echo start rgw on http://localhost:$CEPH_RGW_PORT
-    RGWDEBUG=""
+    RGWDEBUG="1"
     if [ "$debug" -ne 0 ]; then
-        RGWDEBUG="--debug-rgw=20"
+        RGWDEBUG="--debug-rgw=20 --debug-objclass=20"
     fi
 
     RGWSUDO=
