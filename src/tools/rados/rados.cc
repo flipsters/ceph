@@ -1142,6 +1142,232 @@ static int do_cache_flush_evict_all(IoCtx& io_ctx, bool blocking)
   return errors ? -1 : 0;
 }
 
+// Split object list file into multiple parts; based on user specified
+// thread count, ie. num_parts
+// Thread count, ie. part count, is clipped to [10, 100]
+// Each part is clipped to [SPLIT_SIZE_MIN, SPLIT_SIZE_MAX]
+
+#define FAST_FLUSH_THREAD_COUNT_MIN  10
+#define FAST_FLUSH_THREAD_COUNT_MAX 100
+
+#define OBJ_LIST_SIZE_MIN (10 * 1024 * 1024) // 10MB
+#define OBJ_LIST_SIZE_MAX (100ULL * 1024ULL * 1024ULL * 1024ULL) // 100GB
+
+#define SPLIT_SIZE_MIN (1 * 1024 * 1024) // 1MB
+#define SPLIT_SIZE_MAX (1 * 1024 * 1024 * 1024) // 1GB
+
+#define OBJ_LIST_BUF_SIZE (4096)
+
+vector<off_t> *split_obj_list(off_t file_sz, unsigned int num_parts)
+{
+  vector<off_t> *offsets = new vector<off_t>;
+
+  offsets->push_back(0);
+
+  // Input file size < 1MB, why bother ?
+  if (file_sz < SPLIT_SIZE_MIN) {
+    offsets->push_back(file_sz);
+    return offsets;
+  }
+
+  off_t split_sz = file_sz / num_parts;
+  if (split_sz < SPLIT_SIZE_MIN) {
+    split_sz = SPLIT_SIZE_MIN;
+  }
+  if (split_sz > SPLIT_SIZE_MAX) {
+    split_sz = SPLIT_SIZE_MAX;
+  }
+  cout << "Using split size: " << split_sz << std::endl;
+
+  for (off_t next_offset = split_sz;
+       next_offset < file_sz;
+       next_offset += split_sz) {
+    offsets->push_back(next_offset);
+  }
+
+  offsets->push_back(file_sz);
+  return offsets;
+}
+
+int fast_flush_one_obj(IoCtx& io_ctx, string& obj_name)
+{
+  int r = 0;
+  r = do_cache_flush(io_ctx, obj_name);
+  if (r >= 0) {
+    r = do_cache_evict(io_ctx, obj_name);
+  }
+  return r;
+}
+
+typedef struct {
+  int fd;
+  off_t start, end;
+  IoCtx *io_ctx;
+} flush_range_desc_t;
+
+unsigned long long total_processed, total_passed, total_failed;
+
+atomic_t fast_flush_thread_cnt;
+pthread_mutex_t fast_flush_thread_mutex;
+pthread_cond_t fast_flush_thread_cond;
+
+static void *cache_fast_flush_func(void *arg)
+{
+  cout << "thread: " << pthread_self() << " started" << std::endl;
+  unsigned long long processed = 0, passed = 0, failed = 0;
+  char *obj_list_buf = new (std::nothrow) char[OBJ_LIST_BUF_SIZE];
+
+  // Read the given byte range (in the object list file) in chunks,
+  // and tokenize along new-lines
+  flush_range_desc_t *ffd = (flush_range_desc_t *)arg;
+  for (off_t curr = ffd->start;
+       curr < ffd->end;
+       curr += OBJ_LIST_BUF_SIZE) {
+    int r = ::pread(ffd->fd, obj_list_buf, OBJ_LIST_BUF_SIZE, curr);
+    if (r == -1) {
+      cerr << "thread: " << pthread_self()
+	   << ", error reading object list file"
+	   << ", err = " << errno << std::endl;
+      break;
+    }
+    if (r == 0) {
+      break;
+    }
+
+    // Object name spanning this buffer & the next gets borked,
+    // ... and causes 2 failures, but lets' move on
+    obj_list_buf[r - 1] = '\0';
+
+    char *buf, *next_obj_cursor;
+    for (buf = obj_list_buf, next_obj_cursor = NULL; ; buf = NULL) {
+      char *obj_name, delim = '\n';
+      if ((obj_name = strtok_r(buf, &delim, &next_obj_cursor)) == NULL) {
+	break;
+      }
+      string obj_name_str(obj_name);
+      if (fast_flush_one_obj(*(ffd->io_ctx), obj_name_str) < 0) {
+	if ((++failed) % 1000 == 0) {
+	  cerr << "thread: " << pthread_self()
+	       << ", evict fail count: " << failed << std::endl;
+	}
+      } else {
+	if ((++passed) % 1000 == 0) {
+	  cerr << "thread: " << pthread_self()
+	       << ", evict pass count: " << passed << std::endl;
+	}
+      }
+      if ((++processed) % 1000 == 0) {
+	cerr << "thread: " << pthread_self()
+	     << ", processed count: " << processed << std::endl;
+      }
+    }
+  }
+
+  delete obj_list_buf;
+  cout << "thread: " << pthread_self()
+       << ", processed: " << processed
+       << ", passed: " << passed
+       << ", failed: " << failed
+       << std::endl;
+
+  fast_flush_thread_cnt.inc();
+  pthread_mutex_lock(&fast_flush_thread_mutex);
+  total_processed += processed;
+  total_passed += passed;
+  total_failed += failed;
+  pthread_cond_signal(&fast_flush_thread_cond);
+  pthread_mutex_unlock(&fast_flush_thread_mutex);
+  return NULL;
+}
+
+IoCtx *fast_flush_io_ctx(const char *pool_name)
+{
+  int ret;
+  Rados *rados = new (std::nothrow) Rados;
+  if (ret = rados->init_with_context(g_ceph_context)) {
+     cerr << "RADOS initialize error: " << ret << std::endl;
+     return NULL;
+  }
+  if (ret = rados->connect()) {
+     cerr << "RADOS connect error: " << ret << std::endl;
+     return NULL;
+  }
+  IoCtx *io_ctx = new (std::nothrow) IoCtx;
+  if ((ret = rados->ioctx_create(pool_name, *io_ctx)) < 0) {
+    cerr << "Pool open error: " << pool_name << ": "
+	 << cpp_strerror(ret) << std::endl;
+    return NULL;
+  }
+  return io_ctx;
+}
+
+static int do_cache_fast_flush(const char *obj_list_fn,
+			       int num_threads, const char *pool_name)
+{
+  int fd;
+  if ((fd = ::open(obj_list_fn, O_RDONLY)) == -1) {
+    cerr << "Error opening file: " << obj_list_fn << std::endl;
+    return -errno;
+  }
+
+  struct stat st_buf;
+  if (::fstat(fd, &st_buf) == -1) {
+    return -errno;
+  }
+  if (st_buf.st_size > OBJ_LIST_SIZE_MAX) {
+    cerr << "Input file too big, " << st_buf.st_size << std::endl;
+    return -EFBIG;
+  }
+
+  vector<off_t> *offsets = split_obj_list(st_buf.st_size, num_threads);
+  if (offsets->empty()) {
+    cerr << "Error splitting file: " << obj_list_fn << std::endl;
+    return -EINVAL;
+  }
+
+  if (num_threads > (offsets->size() - 1)) {
+    num_threads = offsets->size() - 1;
+  }
+  cout << "Will spawn " << num_threads
+       << " threads to flush from " << obj_list_fn
+       << std::endl;
+
+  total_processed = total_passed = total_failed = 0;
+
+  pthread_t *thread_ids = new (std::nothrow) pthread_t[num_threads];
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+
+  pthread_mutex_init(&fast_flush_thread_mutex, NULL);
+  pthread_cond_init(&fast_flush_thread_cond, NULL);
+
+  for (int i = 0; i < num_threads; i++) {
+    flush_range_desc_t *ffd = new (std::nothrow) flush_range_desc_t;
+    if ((ffd->io_ctx = fast_flush_io_ctx(pool_name)) == NULL) {
+      cerr << "Failed to create io_ctx for thread: " << i << std::endl;
+      continue;
+    }
+    ffd->fd = fd;
+    ffd->start = (*offsets)[i];
+    ffd->end = (*offsets)[i+1];
+    pthread_create(&thread_ids[i], &attr, cache_fast_flush_func, ffd);
+  }
+
+  pthread_mutex_lock(&fast_flush_thread_mutex);
+  while (fast_flush_thread_cnt.read() < num_threads) {
+    pthread_cond_wait(&fast_flush_thread_cond, &fast_flush_thread_mutex);
+  }
+  pthread_mutex_unlock(&fast_flush_thread_mutex);
+
+  cout << "Summary: " << num_threads << " flush threads" << std::endl;
+  cout << "Processed: " << total_processed
+       << ", passed: " << total_passed
+       << ", failed: " << total_failed
+       << std::endl;
+
+  return 0;
+}
+
 char* convert_count(char *buf, long long unsigned count)
 {
   const char *suffixes[] = {"B", "M", "K"};
@@ -2669,6 +2895,26 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 	   << cpp_strerror(ret) << std::endl;
       goto out;
     }
+  } else if (strcmp(nargs[0], "fast-flush") == 0) {
+    if (!pool_name) {
+      cerr << "Need pool name" << std::endl;
+      goto out;
+    }
+    cout << nargs.size() << std::endl;
+    int thd_cnt = FAST_FLUSH_THREAD_COUNT_MIN;
+    if (nargs.size() < 2) {
+      cerr << "Need /path/to/file/with/object/list" << std::endl;;
+      goto out;
+    } else if (nargs.size() > 2) {
+      thd_cnt = atoi(nargs[2]);
+      if (thd_cnt < FAST_FLUSH_THREAD_COUNT_MIN) {
+	thd_cnt = FAST_FLUSH_THREAD_COUNT_MIN;
+      }
+      if (thd_cnt > FAST_FLUSH_THREAD_COUNT_MAX) {
+	thd_cnt = FAST_FLUSH_THREAD_COUNT_MAX;
+      }
+    }
+    ret = do_cache_fast_flush(nargs[1], thd_cnt, pool_name);
   } else {
     cerr << "unrecognized command " << nargs[0] << "; -h or --help for usage" << std::endl;
     ret = -EINVAL;
