@@ -1,3 +1,13 @@
+ceph (0.94.6-1~bpo70+1.fk2) stable; urgency=low
+
+  * Flipkart release
+    - Multipart uploads deletion fix
+    - Orphaned bucket index shards fix
+    - Stale OSDMap trim fix
+    - RGW sync stat bug on bucket deletion
+
+ -- Varada Kari <varadaraja.kari@flipkart.com>  Fri, 14 Jul 2017 17:47:07 +0530
+
 ceph (0.94.6-1~bpo80+1.fk1) stable; urgency=low
 
   * Flipkart release of v0.94.6 with patches
