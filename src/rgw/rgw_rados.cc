@@ -4322,6 +4322,34 @@ bool RGWRados::is_syncing_bucket_meta(rgw_bucket& bucket)
 
   return true;
 }
+
+int RGWRados::check_bucket_empty(rgw_bucket& bucket)
+{
+  std::map<string, RGWObjEnt> ent_map;
+  rgw_obj_key marker;
+  string prefix;
+  bool is_truncated;
+
+  do {
+#define NUM_ENTRIES 1000
+    int r = cls_bucket_list(bucket, marker, prefix, NUM_ENTRIES, true, ent_map,
+                        &is_truncated, &marker);
+    if (r < 0)
+      return r;
+
+    string ns;
+    std::map<string, RGWObjEnt>::iterator eiter;
+    rgw_obj_key obj;
+    string instance;
+    for (eiter = ent_map.begin(); eiter != ent_map.end(); ++eiter) {
+      obj = eiter->second.key;
+
+      if (rgw_obj::translate_raw_obj_to_obj_in_ns(obj.name, instance, ns))
+	return -ENOTEMPTY;
+    }
+  } while (is_truncated);
+  return 0;
+}
   
 /**
  * Delete a bucket.

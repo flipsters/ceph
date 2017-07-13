@@ -1840,6 +1840,8 @@ public:
                string *petag,
                struct rgw_err *err);
 
+  virtual int check_bucket_empty(rgw_bucket& bucket);
+
   /**
    * Delete a bucket.
    * bucket: the name of the bucket to delete
