@@ -6,6 +6,12 @@
 
 #include <map>
 #include "rgw_xml.h"
+#include "rgw_rados.h"
+#include "rgw_op.h"
+
+#define MP_META_SUFFIX ".meta"
+#define MULTIPART_UPLOAD_ID_PREFIX_LEGACY "2/"
+#define MULTIPART_UPLOAD_ID_PREFIX "2~" // must contain a unique char that may not come up in gen_rand_alpha()
 
 class RGWMultiCompleteUpload : public XMLObj
 {
@@ -52,4 +58,52 @@ public:
   ~RGWMultiXMLParser() {}
 };
 
+class MultipartMetaFilter : public RGWAccessListFilter {
+public:
+  MultipartMetaFilter() {}
+  bool filter(string& name, string& key) {
+    int len = name.size();
+    if (len < 6)
+      return false;
+
+    size_t pos = name.find(MP_META_SUFFIX, len - 5);
+    if (pos == string::npos)
+      return false;
+
+    pos = name.rfind('.', pos - 1);
+    if (pos == string::npos)
+      return false;
+
+    key = name.substr(0, pos);
+
+    return true;
+  }
+};
+
+extern bool is_v2_upload_id(const string& upload_id);
+
+extern int list_multipart_parts(RGWRados *store, RGWBucketInfo& bucket_info, CephContext *cct,
+                                const string& upload_id,
+                                string& meta_oid, int num_parts,
+                                int marker, map<uint32_t, RGWUploadPartInfo>& parts,
+                                int *next_marker, bool *truncated,
+                                bool assume_unsorted = false);
+
+extern int list_multipart_parts(RGWRados *store, struct req_state *s,
+                                const string& upload_id,
+                                string& meta_oid, int num_parts,
+                                int marker, map<uint32_t, RGWUploadPartInfo>& parts,
+                                int *next_marker, bool *truncated,
+                                bool assume_unsorted = false);
+
+extern int abort_multipart_upload(RGWRados *store, CephContext *cct, RGWObjectCtx *obj_ctx,
+                                RGWBucketInfo& bucket_info, RGWMPObj& mp_obj);
+
+extern int list_bucket_multiparts(RGWRados *store, RGWBucketInfo& bucket_info,
+                                string& prefix, string& marker, string& delim,
+                                int& max_uploads, vector<RGWObjEnt> *objs,
+                                map<string, bool> *common_prefixes, bool *is_truncated);
+
+extern int abort_bucket_multiparts(RGWRados *store, CephContext *cct, RGWBucketInfo& bucket_info,
+                                string& prefix, string& delim);
 #endif

@@ -39,28 +39,6 @@ static string shadow_ns = RGW_OBJ_NS_SHADOW;
 #define MULTIPART_UPLOAD_ID_PREFIX_LEGACY "2/"
 #define MULTIPART_UPLOAD_ID_PREFIX "2~" // must contain a unique char that may not come up in gen_rand_alpha()
 
-class MultipartMetaFilter : public RGWAccessListFilter {
-public:
-  MultipartMetaFilter() {}
-  bool filter(string& name, string& key) {
-    int len = name.size();
-    if (len < 6)
-      return false;
-
-    int pos = name.find(MP_META_SUFFIX, len - 5);
-    if (pos <= 0)
-      return false;
-
-    pos = name.rfind('.', pos - 1);
-    if (pos < 0)
-      return false;
-
-    key = name.substr(0, pos);
-
-    return true;
-  }
-};
-
 static MultipartMetaFilter mp_filter;
 
 static int parse_range(const char *range, off_t& ofs, off_t& end, bool *partial_content)
@@ -1473,6 +1451,37 @@ void RGWDeleteBucket::execute()
     }
   }
 
+  ret = store->check_bucket_empty(s->bucket_info.bucket);
+  if (ret < 0) {
+    return;
+  }
+
+  string prefix, delimiter;
+
+  if (s->prot_flags & RGW_REST_SWIFT) {
+    string path_args;
+    path_args = s->info.args.get("path");
+    if (!path_args.empty()) {
+      if (!delimiter.empty() || !prefix.empty()) {
+        ret = -EINVAL;
+        return;
+      }
+      prefix = path_args;
+      delimiter="/";
+    }
+  }
+
+  ret = abort_bucket_multiparts(store, s->cct, s->bucket_info, prefix, delimiter);
+
+  if (ret < 0) {
+    return;
+  }
+  
+  ret = rgw_bucket_sync_user_stats(store, s->user.user_id, s->bucket);
+  if ( ret < 0) {
+     ldout(s->cct, 1) << "WARNING: failed to sync user stats before bucket delete: ret= " << ret << dendl;
+  }
+
   ret = store->delete_bucket(s->bucket, ot);
 
   if (ret == 0) {
@@ -1582,14 +1591,6 @@ int RGWPutObjProcessor_Multipart::prepare(RGWRados *store, string *oid_rand)
   cur_obj = head_obj;
 
   return 0;
-}
-
-static bool is_v2_upload_id(const string& upload_id)
-{
-  const char *uid = upload_id.c_str();
-
-  return (strncmp(uid, MULTIPART_UPLOAD_ID_PREFIX, sizeof(MULTIPART_UPLOAD_ID_PREFIX) - 1) == 0) ||
-         (strncmp(uid, MULTIPART_UPLOAD_ID_PREFIX_LEGACY, sizeof(MULTIPART_UPLOAD_ID_PREFIX_LEGACY) - 1) == 0);
 }
 
 int RGWPutObjProcessor_Multipart::do_complete(string& etag, time_t *mtime, time_t set_mtime,
@@ -2853,102 +2854,6 @@ static int get_multipart_info(RGWRados *store, struct req_state *s, string& meta
   return 0;
 }
 
-static int list_multipart_parts(RGWRados *store, struct req_state *s,
-                                const string& upload_id,
-                                string& meta_oid, int num_parts,
-                                int marker, map<uint32_t, RGWUploadPartInfo>& parts,
-                                int *next_marker, bool *truncated,
-                                bool assume_unsorted = false)
-{
-  map<string, bufferlist> parts_map;
-  map<string, bufferlist>::iterator iter;
-  bufferlist header;
-
-  rgw_obj obj;
-  obj.init_ns(s->bucket, meta_oid, mp_ns);
-  obj.set_in_extra_data(true);
-
-  bool sorted_omap = is_v2_upload_id(upload_id) && !assume_unsorted;
-
-  int ret;
-
-  parts.clear();
-  
-  if (sorted_omap) {
-    string p;
-    p = "part.";
-    char buf[32];
-
-    snprintf(buf, sizeof(buf), "%08d", marker);
-    p.append(buf);
-
-    ret = store->omap_get_vals(obj, header, p, num_parts + 1, parts_map);
-  } else {
-    ret = store->omap_get_all(obj, header, parts_map);
-  }
-  if (ret < 0)
-    return ret;
-
-  int i;
-  int last_num = 0;
-
-  uint32_t expected_next = marker + 1;
-
-  for (i = 0, iter = parts_map.begin(); (i < num_parts || !sorted_omap) && iter != parts_map.end(); ++iter, ++i) {
-    bufferlist& bl = iter->second;
-    bufferlist::iterator bli = bl.begin();
-    RGWUploadPartInfo info;
-    try {
-      ::decode(info, bli);
-    } catch (buffer::error& err) {
-      ldout(s->cct, 0) << "ERROR: could not part info, caught buffer::error" << dendl;
-      return -EIO;
-    }
-    if (sorted_omap) {
-      if (info.num != expected_next) {
-        /* ouch, we expected a specific part num here, but we got a different one. Either
-         * a part is missing, or it could be a case of mixed rgw versions working on the same
-         * upload, where one gateway doesn't support correctly sorted omap keys for multipart
-         * upload just assume data is unsorted.
-         */
-        return list_multipart_parts(store, s, upload_id, meta_oid, num_parts, marker, parts, next_marker, truncated, true);
-      }
-      expected_next++;
-    }
-    if (sorted_omap ||
-      (int)info.num > marker) {
-      parts[info.num] = info;
-      last_num = info.num;
-    }
-  }
-
-  if (sorted_omap) {
-    if (truncated)
-      *truncated = (iter != parts_map.end());
-  } else {
-    /* rebuild a map with only num_parts entries */
-
-    map<uint32_t, RGWUploadPartInfo> new_parts;
-    map<uint32_t, RGWUploadPartInfo>::iterator piter;
-
-    for (i = 0, piter = parts.begin(); i < num_parts && piter != parts.end(); ++i, ++piter) {
-      new_parts[piter->first] = piter->second;
-      last_num = piter->first;
-    }
-
-    if (truncated)
-      *truncated = (piter != parts.end());
-
-    parts.swap(new_parts);
-  }
-
-  if (next_marker) {
-    *next_marker = last_num;
-  }
-
-  return 0;
-}
-
 int RGWCompleteMultipart::verify_permission()
 {
   if (!verify_bucket_permission(s, RGW_PERM_WRITE))
@@ -3313,16 +3218,13 @@ void RGWListBucketMultiparts::execute()
   }
   marker_meta = marker.get_meta();
 
-  RGWRados::Bucket target(store, s->bucket);
-  RGWRados::Bucket::List list_op(&target);
+  ret = list_bucket_multiparts(store, s->bucket_info, prefix, marker_meta, delimiter,
+                                  max_uploads, &objs, &common_prefixes, &is_truncated);
+  if (ret < 0) {
+    return;
+  }
 
-  list_op.params.prefix = prefix;
-  list_op.params.delim = delimiter;
-  list_op.params.marker = marker_meta;
-  list_op.params.ns = mp_ns;
-  list_op.params.filter = &mp_filter;
 
-  ret = list_op.list_objects(max_uploads, &objs, &common_prefixes, &is_truncated);
   if (!objs.empty()) {
     vector<RGWObjEnt>::iterator iter;
     RGWMultipartUploadEntry entry;
