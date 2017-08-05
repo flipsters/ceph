@@ -27,10 +27,12 @@
 #include "rgw_cors_s3.h"
 
 #include "rgw_client_io.h"
+#include "cls/lock/cls_lock_client.h"
 
 #define dout_subsys ceph_subsys_rgw
 
 using namespace std;
+using namespace librados;
 using ceph::crypto::MD5;
 
 static string mp_ns = RGW_OBJ_NS_MULTIPART;
@@ -2939,6 +2941,28 @@ void RGWCompleteMultipart::execute()
   meta_obj.set_in_extra_data(true);
   meta_obj.index_hash_source = s->object.name;
 
+  /*take a cls lock on meta_obj to prevent racing completions (or retries)
+    from deleting the parts*/
+  librados::ObjectWriteOperation op;
+  librados::IoCtx ioctx;
+  rados::cls::lock::Lock l("RGWCompleteMultipart");
+  int max_lock_secs_mp = s->cct->_conf->rgw_mp_lock_max_time;
+  string raw_meta_oid = (s->bucket).bucket_id + "_" + meta_obj.get_object();
+
+  op.assert_exists();
+  store->get_obj_ioctx(meta_obj, &ioctx);
+  utime_t time(max_lock_secs_mp, 0);
+  l.set_duration(time);
+  l.lock_exclusive(&op);
+  ret = ioctx.operate(raw_meta_oid, &op);
+
+  if (ret < 0) {
+    dout(0) << "RGWCompleteMultipart::execute() failed to acquire lock " << dendl;
+    ret = -ERR_INTERNAL_ERROR;
+    s->err.message = "This multipart completion is already in progress";
+    return;
+  }
+
   ret = get_obj_attrs(store, s, meta_obj, attrs);
   if (ret < 0) {
     ldout(s->cct, 0) << "ERROR: failed to get obj attrs, obj=" << meta_obj << " ret=" << ret << dendl;
@@ -3045,6 +3069,10 @@ void RGWCompleteMultipart::execute()
   int r = store->delete_obj(*(RGWObjectCtx *)s->obj_ctx, s->bucket_info, meta_obj, 0);
   if (r < 0) {
     ldout(store->ctx(), 0) << "WARNING: failed to remove object " << meta_obj << dendl;
+    r = l.unlock(&ioctx, raw_meta_oid);
+    if (r < 0) {
+      ldout(store->ctx(), 0) << "WARNING: failed to unlock " << dendl;
+    }
   }
 }
 

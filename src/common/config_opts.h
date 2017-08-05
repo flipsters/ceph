@@ -1066,6 +1066,8 @@ OPTION(rgw_latency_bucket_duration_increment, OPT_INT, 2) // size of a percentil
 OPTION(rgw_latency_bucket_reset, OPT_INT, 300) // sec time for next reset
 OPTION(rgw_latency_bucket_update, OPT_INT, 30) // sec time for next update
 
+OPTION(rgw_mp_lock_max_time, OPT_INT, 600) // max time to lock meta object in RGWCompleteMultipart
+
 OPTION(mutex_perf_counter, OPT_BOOL, false) // enable/disable mutex perf counter
 OPTION(throttler_perf_counter, OPT_BOOL, true) // enable/disable throttler perf counter
 
