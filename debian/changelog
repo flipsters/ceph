@@ -1,3 +1,13 @@
+ceph (0.94.6-1~bpo70+1.fk3) stable; urgency=low
+
+  * Flipkart release
+    - Revert "Return ENOTEMPTY if we find any kind of object inside the bucket"
+    - cls/refcount: store and use list of retired tags
+    - RGW: Fix duplicate tag removal during GC
+    - rgw : fix race in RGWCompleteMultipart
+
+ -- Varada Kari <varadaraja.kari@flipkart.com>  Sat, 05 Aug 2017 14:30:00 +0530
+
 ceph (0.94.6-1~bpo70+1.fk2) stable; urgency=low
 
   * Flipkart release
